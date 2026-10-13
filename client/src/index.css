@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Cairo", "Tajawal", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  --color-primary-50: #eef4ff;
+  --color-primary-100: #dfe9ff;
+  --color-primary-200: #c5d6ff;
+  --color-primary-300: #a2bcff;
+  --color-primary-400: #7e95fb;
+  --color-primary-500: #5e72f1;
+  --color-primary-600: #4653e2;
+  --color-primary-700: #3a44c6;
+  --color-primary-800: #31399f;
+  --color-primary-900: #2d357e;
+  --color-primary-950: #1c2050;
+}
+
+html {
+  font-family: var(--font-sans);
+}
+
+body {
+  @apply bg-slate-100 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
+}
+
+/* Slim scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-slate-300 dark:bg-slate-700;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Number inputs: hide spinners for cleaner look */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* Recharts tooltips render outside Tailwind — keep them readable */
+.recharts-default-tooltip {
+  direction: ltr;
+}
+
+/* Printable overlays and print styles */
+@media print {
+  /* Hide application shell */
+  header,
+  nav,
+  aside,
+  button,
+  .print\:hidden {
+    display: none !important;
+  }
+
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  #print-statement {
+    position: static !important;
+    display: block !important;
+  }
+
+  main {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: 100% !important;
+  }
+}

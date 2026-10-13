@@ -1,0 +1,22 @@
+{
+  "name": "warehouse-management",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,green \"npm run dev -w server\" \"npm run dev -w client\"",
+    "db:up": "docker compose up -d",
+    "db:migrate": "npm run migrate -w server",
+    "db:seed": "npm run seed -w server",
+    "db:setup": "npm run db:migrate && npm run db:seed",
+    "build": "npm run build -w server && npm run build -w client",
+    "start": "node server/dist/index.js",
+    "smoke": "npm run smoke -w server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
