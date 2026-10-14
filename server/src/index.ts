@@ -25,6 +25,7 @@ const app = express();
 app.disable('x-powered-by');
 app.use(cors({
   origin: [
+    'https://warehouse-management-client.pages.dev',
     'https://radiant-ganache-bf34a7.netlify.app',
     'http://localhost:5173'
   ],
