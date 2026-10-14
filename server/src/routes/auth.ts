@@ -6,7 +6,7 @@ import { query } from '../db';
 import { asyncH, badRequest, unauthorized } from '../errors';
 import { audit } from '../audit';
 import { clientIp, rateLimit } from '../rateLimit';
-import { signToken, authenticate } from '../middleware/auth';
+import { signToken, authenticate, effectivePermissions } from '../middleware/auth';
 
 const router = Router();
 
@@ -21,7 +21,13 @@ router.post(
   asyncH(async (req: Request, res: Response) => {
     const body = loginSchema.parse(req.body);
     const r = await query(
-      `select * from users where deleted_at is null and (email = $1 or phone = $1) limit 1`,
+      `select u.*, 
+              coalesce(json_agg(up.permission) filter (where up.permission is not null), '[]') as stored_permissions
+       from users u
+       left join user_permissions up on up.user_id = u.id
+       where u.deleted_at is null and (u.email = $1 or u.phone = $1)
+       group by u.id
+       limit 1`,
       [body.identifier.trim().toLowerCase()]
     );
     const user = r.rows[0];
@@ -33,9 +39,10 @@ router.post(
     if (!user.is_active) throw unauthorized('This account has been deactivated — contact the administrator');
     await query(`update users set last_login_at = now() where id = $1`, [user.id]);
     await audit(req, { action: 'login', entity: 'user', entity_id: user.id, new_value: { name: user.name } });
+    const permissions = effectivePermissions(user.role, user.stored_permissions);
     res.json({
       token: signToken(user.id),
-      user: { id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role },
+      user: { id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role, is_active: user.is_active, permissions },
     });
   })
 );

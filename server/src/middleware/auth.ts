@@ -15,6 +15,8 @@ declare global {
   }
 }
 
+export { effectivePermissions };
+
 export function signToken(userId: string): string {
   return jwt.sign({ sub: userId }, JWT_SECRET, { expiresIn: '12h' });
 }
