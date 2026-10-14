@@ -4,6 +4,11 @@ const API_BASE = import.meta.env.PROD ? 'https://warehouse-management-server.fly
 
 export const api = axios.create({ baseURL: API_BASE });
 
+// Retry on network errors (Neon cold start, temporary network issues)
+const RETRY_CODES = ['ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'ENETUNREACH', 'EAI_AGAIN'];
+const isRetryable = (err: any) => 
+  !err.response && (RETRY_CODES.includes(err.code) || err.message?.includes('Network Error') || err.message?.includes('Failed to fetch'));
+
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('wh_token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
@@ -12,7 +17,19 @@ api.interceptors.request.use((config) => {
 
 api.interceptors.response.use(
   (res) => res,
-  (err) => {
+  async (err) => {
+    // Retry on network errors (Neon cold start)
+    if (isRetryable(err) && err.config && !err.config.__retryCount) {
+      err.config.__retryCount = 1;
+      await new Promise(r => setTimeout(r, 3000)); // wait 3s for Neon to wake
+      return api(err.config);
+    }
+    if (isRetryable(err) && err.config && err.config.__retryCount === 1) {
+      err.config.__retryCount = 2;
+      await new Promise(r => setTimeout(r, 8000)); // wait 8s more
+      return api(err.config);
+    }
+
     if (err.response?.status === 401) {
       localStorage.removeItem('wh_token');
       localStorage.removeItem('wh_user');
