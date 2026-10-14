@@ -1,6 +1,8 @@
 import axios from 'axios';
 
-export const api = axios.create({ baseURL: '/api' });
+const API_BASE = import.meta.env.PROD ? 'https://warehouse-management-server.fly.dev' : '/api';
+
+export const api = axios.create({ baseURL: API_BASE });
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('wh_token');
