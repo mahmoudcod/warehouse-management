@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: warehouse-management-server
+    env: docker
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
+    plan: free
+    region: oregon
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "4000"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        sync: false
+    healthCheckPath: /api/auth/me
