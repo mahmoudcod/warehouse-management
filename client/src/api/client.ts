@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE = import.meta.env.PROD ? 'https://warehouse-management-server.fly.dev' : '/api';
+const API_BASE = import.meta.env.PROD ? 'https://warehouse-management-server.fly.dev/api' : '/api';
 
 export const api = axios.create({ baseURL: API_BASE });
 
