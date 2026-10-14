@@ -23,7 +23,13 @@ import searchRoutes from './routes/search';
 
 const app = express();
 app.disable('x-powered-by');
-app.use(cors());
+app.use(cors({
+  origin: [
+    'https://radiant-ganache-bf34a7.netlify.app',
+    'http://localhost:5173'
+  ],
+  credentials: true
+}));
 app.use(express.json({ limit: '2mb' }));
 
 // Auth router is public at its root; protected endpoints apply authenticate() themselves
