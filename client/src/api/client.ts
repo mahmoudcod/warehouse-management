@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE = import.meta.env.PROD ? 'https://warehouse-management-server.fly.dev/api' : '/api';
+const API_BASE = import.meta.env.PROD ? 'https://demoblog-h71e.onrender.com/api' : '/api';
 
 export const api = axios.create({ baseURL: API_BASE });
 

@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { query } from '../db';
+import { Customer, Item, ItemUnit, rx, strip } from '../db';
 import { asyncH } from '../errors';
 
 const router = Router();
@@ -10,25 +10,22 @@ router.get(
   asyncH(async (req: Request, res: Response) => {
     const q = String(req.query.q || '').trim();
     if (q.length < 2) return res.json({ customers: [], items: [] });
-    const like = `%${q}%`;
+    const s = rx(q);
     const perms = req.user!.permissions;
     const customers = perms.includes('customers.view')
-      ? (await query(
-          `select id, name, phone from customers
-           where deleted_at is null and (name ilike $1 or coalesce(phone,'') ilike $1) limit 5`,
-          [like]
-        )).rows
+      ? (await Customer.find({ deleted_at: null, $or: [{ name: s }, { phone: s }] })
+          .limit(5)
+          .lean()).map((c: any) => ({ id: c.id, name: c.name, phone: c.phone }))
       : [];
-    const items = perms.includes('inventory.view')
-      ? (await query(
-          `select i.id, i.name, i.name_ar, i.sku, i.quantity::float8 as quantity from items i
-           where i.deleted_at is null and (i.name ilike $1 or coalesce(i.name_ar,'') ilike $1 or coalesce(i.sku,'') ilike $1
-             or coalesce(i.barcode,'') ilike $1
-             or exists(select 1 from item_units u where u.item_id = i.id and u.serial ilike $1))
-           limit 5`,
-          [like]
-        )).rows
-      : [];
+    let items: any[] = [];
+    if (perms.includes('inventory.view')) {
+      const unitItems = await ItemUnit.find({ serial: s, deleted_at: null }).lean();
+      const or: any[] = [{ name: s }, { name_ar: s }, { sku: s }, { barcode: s }];
+      if (unitItems.length) or.push({ id: { $in: [...new Set(unitItems.map((u: any) => u.item_id))] } });
+      items = (await Item.find({ deleted_at: null, $or: or }).limit(5).lean()).map((i: any) => ({
+        id: i.id, name: i.name, name_ar: i.name_ar, sku: i.sku, quantity: Number(i.quantity),
+      }));
+    }
     res.json({ customers, items });
   })
 );

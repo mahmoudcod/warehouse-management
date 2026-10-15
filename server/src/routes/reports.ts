@@ -1,7 +1,6 @@
 import { Router, Request, Response } from 'express';
-import { query } from '../db';
+import { Item, Customer, Assignment, Payment, Transaction, TransactionCategory, AuditLog, balanceMap, r2, strip, todayStr } from '../db';
 import { asyncH } from '../errors';
-
 import { requirePerm } from '../middleware/auth';
 
 const router = Router();
@@ -19,17 +18,26 @@ function range(req: Request): { from: string; to: string } {
 router.get(
   '/inventory-valuation',
   asyncH(async (_req: Request, res: Response) => {
-    const r = await query(
-      `select coalesce(c.name, 'Uncategorized') as category, coalesce(c.name_ar, c.name, 'بدون تصنيف') as category_ar,
-              count(i.id) as items_count,
-              coalesce(sum(i.quantity),0)::float8 as total_quantity,
-              coalesce(sum(i.quantity * i.cost_price),0)::float8 as cost_value,
-              coalesce(sum(i.quantity * i.selling_price),0)::float8 as sell_value
-       from items i left join categories c on c.id = i.category_id
-       where i.deleted_at is null
-       group by c.name, c.name_ar order by cost_value desc`
-    );
-    const totals = r.rows.reduce(
+    const rows = await Item.aggregate([
+      { $match: { deleted_at: null } },
+      {
+        $lookup: { from: 'categories', localField: 'category_id', foreignField: 'id', as: 'c', pipeline: [{ $project: { name: 1, name_ar: 1, _id: 0 } }] },
+      },
+      {
+        $group: {
+          _id: '$category_id',
+          category: { $first: { $ifNull: [{ $arrayElemAt: ['$c.name', 0] }, 'Uncategorized'] } },
+          category_ar: { $first: { $ifNull: [{ $arrayElemAt: ['$c.name_ar', 0] }, { $ifNull: [{ $arrayElemAt: ['$c.name', 0] }, 'بدون تصنيف'] }] } },
+          items_count: { $sum: 1 },
+          total_quantity: { $sum: '$quantity' },
+          cost_value: { $sum: { $multiply: ['$quantity', '$cost_price'] } },
+          sell_value: { $sum: { $multiply: ['$quantity', '$selling_price'] } },
+        },
+      },
+      { $sort: { cost_value: -1 } },
+      { $unset: '_id' },
+    ]);
+    const totals = rows.reduce(
       (acc: any, x: any) => ({
         items_count: acc.items_count + Number(x.items_count),
         total_quantity: acc.total_quantity + x.total_quantity,
@@ -38,7 +46,7 @@ router.get(
       }),
       { items_count: 0, total_quantity: 0, cost_value: 0, sell_value: 0 }
     );
-    res.json({ rows: r.rows, totals });
+    res.json({ rows, totals });
   })
 );
 
@@ -47,15 +55,34 @@ router.get(
   '/customer-balances',
   asyncH(async (req: Request, res: Response) => {
     const { from, to } = range(req);
-    const r = await query(
-      `select c.id, c.name, c.phone, cb.total_taken, cb.total_returned, cb.total_paid, cb.balance,
-              (select count(*) from assignments a where a.customer_id = c.id and a.status='taken' and a.deleted_at is null) as open_assignments,
-              (select max(a.assigned_at) from assignments a where a.customer_id = c.id and a.status='taken' and a.deleted_at is null) as oldest_open
-       from customers c join customer_balances cb on cb.customer_id = c.id
-       where c.deleted_at is null and ${req.query.all === 'true' ? 'true' : 'cb.balance > 0.005'}
-       order by cb.balance desc`
-    );
-    res.json({ rows: r.rows, from, to });
+    const customers = (await Customer.find({ deleted_at: null }).lean()).map(strip);
+    const balances = await balanceMap(customers.map((c: any) => c.id));
+    // open assignments per customer
+    const openAgg = await Assignment.aggregate([
+      { $match: { status: 'taken', deleted_at: null } },
+      {
+        $group: {
+          _id: '$customer_id',
+          open_assignments: { $sum: 1 },
+          oldest_open: { $min: '$assigned_at' },
+        },
+      },
+    ]);
+    const openById = new Map(openAgg.map((o: any) => [o._id, o]));
+    const rows = customers
+      .map((c: any) => {
+        const b = balances.get(c.id) ?? { total_taken: 0, total_returned: 0, total_paid: 0, balance: 0 };
+        const open = openById.get(c.id);
+        return {
+          id: c.id, name: c.name, phone: c.phone,
+          total_taken: b.total_taken, total_returned: b.total_returned, total_paid: b.total_paid, balance: b.balance,
+          open_assignments: open?.open_assignments ?? 0,
+          oldest_open: open?.oldest_open ?? null,
+        };
+      })
+      .filter((r: any) => (req.query.all === 'true' ? true : r.balance > 0.005))
+      .sort((a: any, b: any) => b.balance - a.balance);
+    res.json({ rows, from, to });
   })
 );
 
@@ -63,18 +90,33 @@ router.get(
 router.get(
   '/receivables-aging',
   asyncH(async (_req: Request, res: Response) => {
-    const r = await query(
-      `select c.id, c.name, a.assigned_at,
-              (a.amount - a.credited_amount)::float8 as outstanding,
-              current_date - a.assigned_at as age_days
-       from assignments a join customers c on c.id = a.customer_id
-       where a.status='taken' and a.deleted_at is null and (a.amount - a.credited_amount) > 0.005
-       order by a.assigned_at asc`
-    );
-    const buckets = { current: 0, d1_30: 0, d31_60: 0, d60_plus: 0 };
-    const rows = r.rows.map((x: any) => {
-      const b = x.age_days <= 30 ? 'current' : x.age_days <= 60 ? 'd1_30' : x.age_days <= 90 ? 'd31_60' : 'd60_plus';
-      buckets[b as keyof typeof buckets] += Number(x.outstanding);
+    const rows0 = await Assignment.aggregate([
+      { $match: { status: 'taken', deleted_at: null } },
+      {
+        $lookup: { from: 'customers', localField: 'customer_id', foreignField: 'id', as: 'c', pipeline: [{ $project: { name: 1, _id: 0 } }] },
+      },
+      { $unwind: '$c' },
+      { $match: { $expr: { $gt: [{ $subtract: ['$amount', '$credited_amount'] }, 0.005] } } },
+      {
+        $set: {
+          name: '$c.name',
+          outstanding: { $subtract: ['$amount', '$credited_amount'] },
+          age_days: {
+            $divide: [
+              { $subtract: [new Date(`${todayStr()}T00:00:00.000Z`), { $dateFromString: { dateString: { $concat: ['$assigned_at', 'T00:00:00Z'] } } }] },
+              1000 * 60 * 60 * 24,
+            ],
+          },
+        },
+      },
+      { $sort: { assigned_at: 1 } },
+      { $unset: ['c'] },
+    ]);
+    const buckets: any = { current: 0, d1_30: 0, d31_60: 0, d60_plus: 0 };
+    const rows = rows0.map((x: any) => {
+      const days = Math.floor(x.age_days);
+      const b = days <= 30 ? 'current' : days <= 60 ? 'd1_30' : days <= 90 ? 'd31_60' : 'd60_plus';
+      buckets[b] += Number(x.outstanding);
       return { ...x, outstanding: Number(x.outstanding), bucket: b };
     });
     res.json({ rows, buckets });
@@ -86,21 +128,32 @@ router.get(
   '/devices-out',
   asyncH(async (req: Request, res: Response) => {
     const { from, to } = range(req);
-    const r = await query(
-      `select a.id, a.assigned_at, a.quantity, a.amount::float8 as amount, a.serial_numbers,
-              c.name as customer_name, c.phone as customer_phone,
-              coalesce(i.name, a.item_text) as item_name, coalesce(i.name_ar, i.name, a.item_text) as item_name_ar,
-              u.name as created_by_name
-       from assignments a
-       join customers c on c.id = a.customer_id
-       left join items i on i.id = a.item_id
-       left join users u on u.id = a.created_by
-       where a.status='taken' and a.deleted_at is null and a.assigned_at between $1 and $2
-       order by a.assigned_at desc`,
-      [from, to]
-    );
-    const total = r.rows.reduce((s: number, x: any) => s + Number(x.amount), 0);
-    res.json({ rows: r.rows, total, from, to });
+    const rows = await Assignment.aggregate([
+      { $match: { status: 'taken', deleted_at: null, assigned_at: { $gte: from, $lte: to } } },
+      {
+        $lookup: { from: 'customers', localField: 'customer_id', foreignField: 'id', as: 'c', pipeline: [{ $project: { name: 1, phone: 1, _id: 0 } }] },
+      },
+      { $unwind: '$c' },
+      {
+        $lookup: { from: 'items', localField: 'item_id', foreignField: 'id', as: 'i', pipeline: [{ $project: { name: 1, name_ar: 1, _id: 0 } }] },
+      },
+      {
+        $lookup: { from: 'users', localField: 'created_by', foreignField: 'id', as: 'u', pipeline: [{ $project: { name: 1, _id: 0 } }] },
+      },
+      {
+        $set: {
+          customer_name: '$c.name',
+          customer_phone: '$c.phone',
+          item_name: { $ifNull: [{ $arrayElemAt: ['$i.name', 0] }, '$item_text'] },
+          item_name_ar: { $ifNull: [{ $arrayElemAt: ['$i.name_ar', 0] }, { $ifNull: [{ $arrayElemAt: ['$i.name', 0] }, '$item_text'] }] },
+          created_by_name: { $ifNull: [{ $arrayElemAt: ['$u.name', 0] }, null] },
+        },
+      },
+      { $sort: { assigned_at: -1 } },
+      { $unset: ['c', 'i', 'u'] },
+    ]);
+    const total = rows.reduce((s: number, x: any) => s + Number(x.amount), 0);
+    res.json({ rows, total, from, to });
   })
 );
 
@@ -109,24 +162,38 @@ router.get(
   '/payments',
   asyncH(async (req: Request, res: Response) => {
     const { from, to } = range(req);
-    const r = await query(
-      `select p.paid_at, p.receipt_number, p.amount::float8 as amount, p.method, p.status,
-              c.name as customer_name, u.name as received_by_name
-       from payments p join customers c on c.id = p.customer_id
-       left join users u on u.id = p.received_by
-       where p.deleted_at is null and p.paid_at between $1 and $2
-       order by p.paid_at desc`,
-      [from, to]
-    );
+    const rows = await Payment.aggregate([
+      { $match: { deleted_at: null, paid_at: { $gte: from, $lte: to } } },
+      {
+        $lookup: { from: 'customers', localField: 'customer_id', foreignField: 'id', as: 'c', pipeline: [{ $project: { name: 1, _id: 0 } }] },
+      },
+      { $unwind: '$c' },
+      {
+        $lookup: { from: 'users', localField: 'received_by', foreignField: 'id', as: 'u', pipeline: [{ $project: { name: 1, _id: 0 } }] },
+      },
+      {
+        $set: {
+          customer_name: '$c.name',
+          received_by_name: { $ifNull: [{ $arrayElemAt: ['$u.name', 0] }, null] },
+        },
+      },
+      {
+        $project: {
+          _id: 0, paid_at: 1, receipt_number: 1, amount: 1, method: 1, status: 1,
+          customer_name: 1, received_by_name: 1,
+        },
+      },
+      { $sort: { paid_at: -1 } },
+    ]);
     const byMethod: Record<string, number> = {};
     let total = 0;
-    for (const row of r.rows) {
+    for (const row of rows) {
       if (row.status === 'active') {
         total += row.amount;
         byMethod[row.method] = (byMethod[row.method] || 0) + row.amount;
       }
     }
-    res.json({ rows: r.rows, total, byMethod, from, to });
+    res.json({ rows, total, byMethod, from, to });
   })
 );
 
@@ -135,24 +202,27 @@ router.get(
   '/income-statement',
   asyncH(async (req: Request, res: Response) => {
     const { from, to } = range(req);
-    const income = (await query(
-      `select coalesce(tc.name,'Other') as category, coalesce(tc.name_ar, tc.name, 'أخرى') as category_ar,
-              sum(t.amount)::float8 as total, count(*) as entries
-       from transactions t left join transaction_categories tc on tc.id = t.category_id
-       where t.status='active' and t.deleted_at is null and t.type='income' and t.transfer_id is null
-         and t.occurred_at between $1 and $2
-       group by tc.name, tc.name_ar order by total desc`,
-      [from, to]
-    )).rows;
-    const expense = (await query(
-      `select coalesce(tc.name,'Other') as category, coalesce(tc.name_ar, tc.name, 'أخرى') as category_ar,
-              sum(t.amount)::float8 as total, count(*) as entries
-       from transactions t left join transaction_categories tc on tc.id = t.category_id
-       where t.status='active' and t.deleted_at is null and t.type='expense' and t.transfer_id is null
-         and t.occurred_at between $1 and $2
-       group by tc.name, tc.name_ar order by total desc`,
-      [from, to]
-    )).rows;
+    const groupStage = [
+      {
+        $lookup: { from: 'transactioncategories', localField: 'category_id', foreignField: 'id', as: 'tc', pipeline: [{ $project: { name: 1, name_ar: 1, _id: 0 } }] },
+      },
+      {
+        $group: {
+          _id: '$category_id',
+          category: { $first: { $ifNull: [{ $arrayElemAt: ['$tc.name', 0] }, 'Other'] } },
+          category_ar: { $first: { $ifNull: [{ $arrayElemAt: ['$tc.name_ar', 0] }, { $ifNull: [{ $arrayElemAt: ['$tc.name', 0] }, 'أخرى'] }] } },
+          total: { $sum: '$amount' },
+          entries: { $sum: 1 },
+        },
+      },
+      { $sort: { total: -1 } },
+      { $unset: '_id' },
+    ];
+    const base = { status: 'active', deleted_at: null, transfer_id: null, occurred_at: { $gte: from, $lte: to } };
+    const [income, expense] = await Promise.all([
+      Transaction.aggregate([{ $match: { ...base, type: 'income' } }, ...groupStage] as any[]),
+      Transaction.aggregate([{ $match: { ...base, type: 'expense' } }, ...groupStage] as any[]),
+    ]);
     const totalIncome = income.reduce((s: number, x: any) => s + x.total, 0);
     const totalExpense = expense.reduce((s: number, x: any) => s + x.total, 0);
     res.json({ from, to, income, expense, totalIncome, totalExpense, netProfit: totalIncome - totalExpense });
@@ -164,16 +234,20 @@ router.get(
   '/cash-flow',
   asyncH(async (req: Request, res: Response) => {
     const { from, to } = range(req);
-    const r = await query(
-      `select to_char(date_trunc('month', t.occurred_at), 'YYYY-MM') as month,
-              sum(case when t.type='income' then t.amount else 0 end)::float8 as inflow,
-              sum(case when t.type='expense' then t.amount else 0 end)::float8 as outflow
-       from transactions t
-       where t.status='active' and t.deleted_at is null and t.occurred_at between $1 and $2
-       group by 1 order by 1`,
-      [from, to]
-    );
-    res.json({ rows: r.rows, from, to });
+    const rows = await Transaction.aggregate([
+      { $match: { status: 'active', deleted_at: null, occurred_at: { $gte: from, $lte: to } } },
+      {
+        $group: {
+          _id: { $substrCP: ['$occurred_at', 0, 7] },
+          inflow: { $sum: { $cond: [{ $eq: ['$type', 'income'] }, '$amount', 0] } },
+          outflow: { $sum: { $cond: [{ $eq: ['$type', 'expense'] }, '$amount', 0] } },
+        },
+      },
+      { $set: { month: '$_id' } },
+      { $sort: { month: 1 } },
+      { $unset: '_id' },
+    ]);
+    res.json({ rows, from, to });
   })
 );
 
@@ -182,21 +256,25 @@ router.get(
   '/staff-activity',
   asyncH(async (req: Request, res: Response) => {
     const { from, to } = range(req);
-    const params: any[] = [from, to];
-    const r = await query(
-      `select coalesce(al.user_name, 'system') as user_name, al.user_id,
-              count(*) as actions,
-              count(*) filter (where al.action='login') as logins,
-              count(*) filter (where al.entity='payment') as payment_actions,
-              count(*) filter (where al.entity='assignment') as assignment_actions,
-              count(*) filter (where al.entity='transaction') as transaction_actions,
-              max(al.created_at) as last_action_at
-       from audit_logs al
-       where al.created_at::date between $1 and $2
-       group by 1, 2 order by actions desc`,
-      params
-    );
-    res.json({ rows: r.rows, from, to });
+    const rows = await AuditLog.aggregate([
+      { $match: { created_at: { $gte: new Date(`${from}T00:00:00.000Z`), $lte: new Date(`${to}T23:59:59.999Z`) } } },
+      {
+        $group: {
+          _id: { user_name: { $ifNull: ['$user_name', 'system'] }, user_id: '$user_id' },
+          user_name: { $first: { $ifNull: ['$user_name', 'system'] } },
+          user_id: { $first: '$user_id' },
+          actions: { $sum: 1 },
+          logins: { $sum: { $cond: [{ $eq: ['$action', 'login'] }, 1, 0] } },
+          payment_actions: { $sum: { $cond: [{ $eq: ['$entity', 'payment'] }, 1, 0] } },
+          assignment_actions: { $sum: { $cond: [{ $eq: ['$entity', 'assignment'] }, 1, 0] } },
+          transaction_actions: { $sum: { $cond: [{ $eq: ['$entity', 'transaction'] }, 1, 0] } },
+          last_action_at: { $max: '$created_at' },
+        },
+      },
+      { $sort: { actions: -1 } },
+      { $unset: '_id' },
+    ]);
+    res.json({ rows, from, to });
   })
 );
 

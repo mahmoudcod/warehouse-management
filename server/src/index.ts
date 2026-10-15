@@ -3,6 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
+import { connectDB } from './db';
 import { authenticate } from './middleware/auth';
 import { handleError, AppError } from './errors';
 
@@ -75,6 +76,15 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 });
 
 const port = Number(process.env.PORT || 4000);
-app.listen(port, () => {
-  console.log(`✔ Warehouse API listening on http://localhost:${port}`);
-});
+
+(async () => {
+  try {
+    await connectDB();
+    console.log('✔ Connected to MongoDB');
+  } catch (e) {
+    console.error('✖ MongoDB connection failed — API will serve errors until the DB is reachable', e);
+  }
+  app.listen(port, () => {
+    console.log(`✔ Warehouse API listening on http://localhost:${port}`);
+  });
+})();

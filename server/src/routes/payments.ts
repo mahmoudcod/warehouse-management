@@ -1,30 +1,46 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { query, withTransaction, nextSequence, isoDate } from '../db';
+import {
+  Payment, Transaction, Account, TransactionCategory, ClosedPeriod, Customer,
+  createWithId, withTransaction, nextSequence, isoDate, customerBalance, rx, strip, todayStr,
+} from '../db';
 import { asyncH, badRequest, forbidden, notFound } from '../errors';
 import { audit } from '../audit';
-import { parseList, runList } from '../paging';
+import { parseList, runAggList } from '../paging';
 
 const router = Router();
 
+const numId = z.union([z.string(), z.number()]).transform((v) => Number(v));
+
 /** A month is locked → only Super Admin may touch entries inside it. */
-async function assertPeriodOpen(client: any, dateStr: any, user: any) {
+async function assertPeriodOpen(session: any, dateStr: any, user: any) {
   const month = isoDate(dateStr).slice(0, 7);
-  const r = await client.query(
-    `select 1 from closed_periods where to_char(period, 'YYYY-MM') = $1`,
-    [month]
-  );
-  if (r.rows[0] && user.role !== 'super_admin') {
+  const closed: any = await ClosedPeriod.findOne({ period: `${month}-01` }).session(session);
+  if (closed && user.role !== 'super_admin') {
     throw forbidden(`Month ${month} is closed — a Super Admin must approve changes to locked periods`);
   }
 }
 
+async function findDefaultCategory(session: any, name: string) {
+  const cat: any = await TransactionCategory.findOne({ is_default: true, name, deleted_at: null }).session(session);
+  return cat?.id ?? null;
+}
+
+async function pickAccount(session: any, method: string, explicitId?: number | null) {
+  if (explicitId) return explicitId;
+  const acc: any = await Account.findOne({
+    is_active: true, deleted_at: null,
+    type: method === 'cash' ? 'cash' : 'bank',
+  }).sort({ created_at: 1 }).session(session);
+  return acc?.id ?? null;
+}
+
 const createBody = z.object({
-  customer_id: z.string().uuid(),
+  customer_id: numId,
   amount: z.number().positive(),
   method: z.enum(['cash', 'transfer', 'other']).default('cash'),
   paid_at: z.string().optional(),
-  account_id: z.string().uuid().optional().nullable(),
+  account_id: numId.optional().nullable(),
   notes: z.string().optional().nullable(),
 });
 
@@ -37,44 +53,43 @@ router.post(
   asyncH(async (req: Request, res: Response) => {
     if (!req.user!.permissions.includes('payments.create')) throw forbidden();
     const body = createBody.parse(req.body);
-    const result = await withTransaction(async (client) => {
-      const cust = (await client.query(`select id, name from customers where id=$1 and deleted_at is null`, [body.customer_id])).rows[0];
+    const result = await withTransaction(async (session) => {
+      const cust: any = await Customer.findOne({ id: body.customer_id, deleted_at: null }).session(session);
       if (!cust) throw notFound('Customer not found');
-      await assertPeriodOpen(client, body.paid_at || new Date().toISOString().slice(0, 10), req.user);
+      const paidAt = body.paid_at || todayStr();
+      await assertPeriodOpen(session, paidAt, req.user);
 
-      const seq = await nextSequence(client, 'receipt');
+      const seq = await nextSequence('receipt', session);
       const receiptNumber = `R-${new Date().toISOString().slice(0, 7).replace('-', '')}-${String(seq).padStart(5, '0')}`;
 
-      const p = (await client.query(
-        `insert into payments (customer_id, amount, method, paid_at, receipt_number, received_by, notes)
-         values ($1,$2,$3,coalesce($4, current_date),$5,$6,$7) returning *`,
-        [body.customer_id, body.amount, body.method, body.paid_at || null, receiptNumber, req.user!.id, body.notes || null]
-      )).rows[0];
+      const p: any = await createWithId(
+        Payment,
+        {
+          customer_id: body.customer_id, amount: body.amount, method: body.method,
+          paid_at: paidAt, receipt_number: receiptNumber, received_by: req.user!.id, notes: body.notes || null,
+        },
+        session
+      );
 
       // Auto income entry in Accounting, linked to the source payment.
-      const cat = (await client.query(
-        `select id from transaction_categories where is_default and name = 'customer_collections'`
-      )).rows[0];
-      let accountId = body.account_id || null;
-      if (!accountId) {
-        const acc = (await client.query(
-          `select id from accounts where is_active and deleted_at is null and type = $1 order by created_at limit 1`,
-          [body.method === 'cash' ? 'cash' : 'bank']
-        )).rows[0];
-        accountId = acc?.id || null;
-      }
-      const t = (await client.query(
-        `insert into transactions (type, amount, category_id, occurred_at, method, account_id, customer_id, payment_id, notes, created_by)
-         values ('income',$1,$2,$3,$4,$5,$6,$7,$8,$9) returning *`,
-        [body.amount, cat?.id || null, p.paid_at, body.method, accountId, body.customer_id, p.id,
-         body.notes ? `Payment ${receiptNumber}` : `Payment ${receiptNumber}`, req.user!.id]
-      )).rows[0];
-      await client.query(`update payments set transaction_id=$2 where id=$1`, [p.id, t.id]);
+      const catId = await findDefaultCategory(session, 'customer_collections');
+      const accountId = await pickAccount(session, body.method, body.account_id || null);
+      const t: any = await createWithId(
+        Transaction,
+        {
+          type: 'income', amount: body.amount, category_id: catId, occurred_at: p.paid_at,
+          method: body.method, account_id: accountId, customer_id: body.customer_id, payment_id: p.id,
+          notes: `Payment ${receiptNumber}`, created_by: req.user!.id,
+        },
+        session
+      );
+      await Payment.updateOne({ id: p.id }, { transaction_id: t.id }, { session });
       if (accountId) {
-        await client.query(`update accounts set balance = balance + $2 where id=$1`, [accountId, body.amount]);
+        await Account.updateOne({ id: accountId }, { $inc: { balance: body.amount } }, { session });
       }
-      const balance = (await client.query(`select balance from customer_balances where customer_id=$1`, [body.customer_id])).rows[0];
-      return { payment: { ...p, transaction_id: t.id }, newBalance: balance?.balance ?? 0 };
+      const balance = await customerBalance(body.customer_id);
+      const payment = { ...strip(p.toObject()), transaction_id: t.id };
+      return { payment, newBalance: balance.balance };
     });
     await audit(req, { action: 'create', entity: 'payment', entity_id: result.payment.id, new_value: result.payment });
     res.status(201).json(result);
@@ -84,32 +99,38 @@ router.post(
 router.get(
   '/',
   asyncH(async (req: Request, res: Response) => {
-    const lp = parseList(req, { paid_at: 'p.paid_at', amount: 'p.amount', customer: 'c.name', receipt: 'p.receipt_number' }, 'paid_at');
-    const params: any[] = [];
-    let where = `p.deleted_at is null`;
-    if (req.user!.permissions.includes('data.own_only')) {
-      params.push(req.user!.id);
-      where += ` and p.received_by = $${params.length}`;
-    }
+    const lp = parseList(req, { paid_at: 'paid_at', amount: 'amount', customer: 'customer_name', receipt: 'receipt_number' }, 'paid_at');
+    const match: any = { deleted_at: null };
+    if (req.user!.permissions.includes('data.own_only')) match.received_by = req.user!.id;
+    if (req.query.customer_id) match.customer_id = Number(req.query.customer_id);
+    if (req.query.method) match.method = req.query.method;
+    if (req.query.status) match.status = req.query.status;
+    if (lp.from) match.paid_at = { ...(match.paid_at || {}), $gte: lp.from };
+    if (lp.to) match.paid_at = { ...(match.paid_at || {}), $lte: lp.to };
+
+    const pipeline: any[] = [
+      { $match: match },
+      {
+        $lookup: { from: 'customers', localField: 'customer_id', foreignField: 'id', as: 'c', pipeline: [{ $project: { name: 1, phone: 1, _id: 0 } }] },
+      },
+      { $unwind: '$c' },
+      {
+        $lookup: { from: 'users', localField: 'received_by', foreignField: 'id', as: 'u', pipeline: [{ $project: { name: 1, _id: 0 } }] },
+      },
+      {
+        $set: {
+          customer_name: '$c.name',
+          customer_phone: '$c.phone',
+          received_by_name: { $ifNull: [{ $arrayElemAt: ['$u.name', 0] }, null] },
+        },
+      },
+    ];
     if (lp.search) {
-      params.push(`%${lp.search}%`);
-      where += ` and (c.name ilike $${params.length} or coalesce(p.receipt_number,'') ilike $${params.length} or coalesce(p.notes,'') ilike $${params.length})`;
+      const s = rx(lp.search);
+      pipeline.push({ $match: { $or: [{ 'c.name': s }, { receipt_number: s }, { notes: s }] } });
     }
-    if (req.query.customer_id) { params.push(req.query.customer_id); where += ` and p.customer_id = $${params.length}`; }
-    if (req.query.method) { params.push(req.query.method); where += ` and p.method = $${params.length}`; }
-    if (req.query.status) { params.push(req.query.status); where += ` and p.status = $${params.length}`; }
-    if (lp.from) { params.push(lp.from); where += ` and p.paid_at >= $${params.length}`; }
-    if (lp.to) { params.push(lp.to); where += ` and p.paid_at <= $${params.length}`; }
-    const result = await runList(
-      `select p.*, c.name as customer_name, c.phone as customer_phone, u.name as received_by_name
-       from payments p join customers c on c.id = p.customer_id
-       left join users u on u.id = p.received_by
-       where ${where}`,
-      `select count(*) from payments p join customers c on c.id = p.customer_id where ${where}`,
-      params,
-      lp
-    );
-    result.rows = result.rows.map((r: any) => ({ ...r, amount: Number(r.amount) }));
+    pipeline.push({ $unset: ['c', 'u'] });
+    const result = await runAggList(Payment, pipeline, lp.sort, lp);
     res.json(result);
   })
 );
@@ -117,15 +138,22 @@ router.get(
 router.get(
   '/:id',
   asyncH(async (req: Request, res: Response) => {
-    const r = await query(
-      `select p.*, c.name as customer_name, c.phone as customer_phone, u.name as received_by_name
-       from payments p join customers c on c.id = p.customer_id
-       left join users u on u.id = p.received_by
-       where p.id = $1 and p.deleted_at is null`,
-      [req.params.id]
-    );
-    if (!r.rows[0]) throw notFound('Payment not found');
-    res.json({ ...r.rows[0], amount: Number(r.rows[0].amount) });
+    const rows = await Payment.aggregate([
+      { $match: { id: Number(req.params.id), deleted_at: null } },
+      { $lookup: { from: 'customers', localField: 'customer_id', foreignField: 'id', as: 'c', pipeline: [{ $project: { name: 1, phone: 1, _id: 0 } }] } },
+      { $unwind: '$c' },
+      { $lookup: { from: 'users', localField: 'received_by', foreignField: 'id', as: 'u', pipeline: [{ $project: { name: 1, _id: 0 } }] } },
+      {
+        $set: {
+          customer_name: '$c.name',
+          customer_phone: '$c.phone',
+          received_by_name: { $ifNull: [{ $arrayElemAt: ['$u.name', 0] }, null] },
+        },
+      },
+      { $unset: ['c', 'u', '_id'] },
+    ]);
+    if (!rows[0]) throw notFound('Payment not found');
+    res.json({ ...rows[0], amount: Number(rows[0].amount) });
   })
 );
 
@@ -141,36 +169,39 @@ router.patch(
       notes: z.string().optional().nullable(),
       reason: z.string().min(3),
     }).parse(req.body);
-    const result = await withTransaction(async (client) => {
-      const r = await client.query(`select * from payments where id=$1 and deleted_at is null for update`, [req.params.id]);
-      const p = r.rows[0];
+    const result = await withTransaction(async (session) => {
+      const p: any = await Payment.findOne({ id: Number(req.params.id), deleted_at: null }).session(session);
       if (!p) throw notFound('Payment not found');
       if (p.status === 'voided') throw badRequest('Cannot edit a voided payment');
-      await assertPeriodOpen(client, p.paid_at, req.user);
-      if (body.paid_at) await assertPeriodOpen(client, body.paid_at, req.user);
+      await assertPeriodOpen(session, p.paid_at, req.user);
+      if (body.paid_at) await assertPeriodOpen(session, body.paid_at, req.user);
 
-      const newAmount = body.amount ?? Number(p.amount);
+      const newAmount = body.amount ?? p.amount;
       const newDate = body.paid_at || p.paid_at;
       const newMethod = body.method || p.method;
-      const r2 = await client.query(
-        `update payments set amount=$2, method=$3, paid_at=$4, notes=$5, updated_at=now() where id=$1 returning *`,
-        [p.id, newAmount, newMethod, newDate, body.notes ?? p.notes]
+      await Payment.updateOne(
+        { id: p.id },
+        { amount: newAmount, method: newMethod, paid_at: newDate, notes: body.notes ?? p.notes, updated_at: new Date() },
+        { session }
       );
       // sync linked transaction + account balance
       if (p.transaction_id) {
-        const t = (await client.query(`select * from transactions where id=$1`, [p.transaction_id])).rows[0];
+        const t: any = await Transaction.findOne({ id: p.transaction_id }).session(session);
         if (t) {
           if (t.account_id) {
-            const delta = newAmount - Number(t.amount);
-            await client.query(`update accounts set balance = balance + $2 where id=$1`, [t.account_id, delta]);
+            const delta = newAmount - t.amount;
+            await Account.updateOne({ id: t.account_id }, { $inc: { balance: delta } }, { session });
           }
-          await client.query(
-            `update transactions set amount=$2, occurred_at=$3, method=$4, updated_at=now() where id=$1`,
-            [t.id, newAmount, newDate, newMethod]
+          await Transaction.updateOne(
+            { id: t.id },
+            { amount: newAmount, occurred_at: newDate, method: newMethod, updated_at: new Date() },
+            { session }
           );
         }
       }
-      return { old: p, updated: r2.rows[0] };
+      const old = strip(p.toObject());
+      const updated = strip(await Payment.findOne({ id: p.id }).session(session).lean());
+      return { old, updated };
     });
     await audit(req, { action: 'update', entity: 'payment', entity_id: req.params.id, old_value: result.old, new_value: { ...result.updated, reason: body.reason } });
     res.json(result.updated);
@@ -184,29 +215,28 @@ router.post(
     const perms = req.user!.permissions;
     if (!perms.includes('payments.approve') && !perms.includes('payments.delete') && req.user!.role !== 'super_admin') throw forbidden();
     const body = z.object({ reason: z.string().min(3) }).parse(req.body);
-    const result = await withTransaction(async (client) => {
-      const r = await client.query(`select * from payments where id=$1 and deleted_at is null for update`, [req.params.id]);
-      const p = r.rows[0];
+    const result = await withTransaction(async (session) => {
+      const p: any = await Payment.findOne({ id: Number(req.params.id), deleted_at: null }).session(session);
       if (!p) throw notFound('Payment not found');
       if (p.status === 'voided') throw badRequest('Payment is already voided');
-      await assertPeriodOpen(client, p.paid_at, req.user);
-      const r2 = await client.query(
-        `update payments set status='voided', void_reason=$2, updated_at=now() where id=$1 returning *`,
-        [p.id, body.reason]
-      );
+      await assertPeriodOpen(session, p.paid_at, req.user);
+      await Payment.updateOne({ id: p.id }, { status: 'voided', void_reason: body.reason, updated_at: new Date() }, { session });
       if (p.transaction_id) {
-        const t = (await client.query(`select * from transactions where id=$1`, [p.transaction_id])).rows[0];
+        const t: any = await Transaction.findOne({ id: p.transaction_id }).session(session);
         if (t && t.status === 'active') {
           if (t.account_id) {
-            await client.query(`update accounts set balance = balance - $2 where id=$1`, [t.account_id, t.amount]);
+            await Account.updateOne({ id: t.account_id }, { $inc: { balance: -t.amount } }, { session });
           }
-          await client.query(
-            `update transactions set status='voided', void_reason=$2, updated_at=now() where id=$1`,
-            [t.id, `Payment void: ${body.reason}`]
+          await Transaction.updateOne(
+            { id: t.id },
+            { status: 'voided', void_reason: `Payment void: ${body.reason}`, updated_at: new Date() },
+            { session }
           );
         }
       }
-      return { old: p, updated: r2.rows[0] };
+      const old = strip(p.toObject());
+      const updated = strip(await Payment.findOne({ id: p.id }).session(session).lean());
+      return { old, updated };
     });
     await audit(req, { action: 'void', entity: 'payment', entity_id: req.params.id, old_value: result.old, new_value: { ...result.updated, reason: body.reason } });
     res.json(result.updated);

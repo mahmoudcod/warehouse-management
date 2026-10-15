@@ -1,37 +1,28 @@
 import 'dotenv/config';
-import fs from 'fs';
-import path from 'path';
-import { pool } from './db';
+import { connectDB, mongoose, Setting, Sequence } from './db';
 
+/**
+ * "Migrations" for MongoDB: ensure indexes exist and the single-row
+ * settings document / receipt sequence are in place. Idempotent.
+ */
 async function main() {
-  const dir = path.join(__dirname, '..', 'migrations');
-  await pool.query(
-    `create table if not exists schema_migrations (name text primary key, applied_at timestamptz default now())`
-  );
-  const applied = new Set(
-    (await pool.query(`select name from schema_migrations`)).rows.map((r) => r.name)
-  );
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
-  for (const file of files) {
-    if (applied.has(file)) continue;
-    const sql = fs.readFileSync(path.join(dir, file), 'utf8');
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(sql);
-      await client.query(`insert into schema_migrations (name) values ($1)`, [file]);
-      await client.query('COMMIT');
-      console.log(`✔ applied ${file}`);
-    } catch (e) {
-      await client.query('ROLLBACK');
-      console.error(`✖ failed ${file}`, e);
-      process.exit(1);
-    } finally {
-      client.release();
-    }
+  await connectDB();
+
+  // create/refresh all indexes defined on the models
+  for (const name of mongoose.modelNames()) {
+    await mongoose.model(name).syncIndexes();
+    console.log(`✔ indexes ensured for ${name}`);
   }
-  await pool.end();
-  console.log('Migrations complete.');
+
+  await Setting.updateOne({ id: 1 }, { $setOnInsert: { id: 1 } }, { upsert: true });
+  await Sequence.updateOne({ name: 'receipt' }, { $setOnInsert: { name: 'receipt', value: 0 } }, { upsert: true });
+  console.log('✔ defaults ensured (settings row, receipt sequence)');
+
+  await mongoose.disconnect();
+  console.log('Setup complete.');
 }
 
-main();
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

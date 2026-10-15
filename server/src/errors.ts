@@ -30,11 +30,14 @@ export function handleError(err: any, res: Response) {
   if (err instanceof AppError) {
     return res.status(err.status).json({ error: err.message });
   }
-  // Postgres check-violation / unique etc.
-  if (err && err.code === '23514') {
-    return res.status(400).json({ error: 'Operation violates a data constraint (e.g. stock cannot go negative)' });
+  // Mongo validation / duplicate-key errors
+  if (err && err.name === 'ValidationError') {
+    const msg = Object.values(err.errors || {})
+      .map((e: any) => e.message)
+      .join('; ');
+    return res.status(400).json({ error: msg || 'Invalid data' });
   }
-  if (err && err.code === '23505') {
+  if (err && err.code === 11000) {
     return res.status(409).json({ error: 'A record with the same unique value already exists' });
   }
   console.error(err);

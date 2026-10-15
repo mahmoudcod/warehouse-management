@@ -1,6 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
-import { query } from '../db';
+import { User } from '../db';
 import { AuthUser, effectivePermissions, hasPermission } from '../permissions';
 import { forbidden, unauthorized } from '../errors';
 
@@ -17,8 +17,8 @@ declare global {
 
 export { effectivePermissions };
 
-export function signToken(userId: string): string {
-  return jwt.sign({ sub: userId }, JWT_SECRET, { expiresIn: '12h' });
+export function signToken(userId: string | number): string {
+  return jwt.sign({ sub: String(userId) }, JWT_SECRET, { expiresIn: '12h' });
 }
 
 /**
@@ -36,26 +36,17 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
     } catch {
       throw unauthorized('Session expired or invalid — please sign in again');
     }
-    const r = await query(
-      `select u.id, u.name, u.email, u.phone, u.role, u.is_active,
-              coalesce(json_agg(up.permission) filter (where up.permission is not null), '[]') as stored_permissions
-       from users u
-       left join user_permissions up on up.user_id = u.id
-       where u.id = $1 and u.deleted_at is null
-       group by u.id`,
-      [payload.sub]
-    );
-    const row = r.rows[0];
-    if (!row) throw unauthorized();
-    if (!row.is_active) throw unauthorized('This account has been deactivated');
+    const user: any = await User.findOne({ id: Number(payload.sub), deleted_at: null }).lean();
+    if (!user) throw unauthorized();
+    if (!user.is_active) throw unauthorized('This account has been deactivated');
     req.user = {
-      id: row.id,
-      name: row.name,
-      email: row.email,
-      phone: row.phone,
-      role: row.role,
-      is_active: row.is_active,
-      permissions: effectivePermissions(row.role, row.stored_permissions),
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      is_active: user.is_active,
+      permissions: effectivePermissions(user.role, user.permissions ?? []),
     };
     next();
   } catch (e) {

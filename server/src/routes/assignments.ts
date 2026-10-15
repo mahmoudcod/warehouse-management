@@ -1,29 +1,31 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { query, withTransaction } from '../db';
+import { Assignment, Item, ItemUnit, StockMovement, createWithId, withTransaction, rx, r2, strip, todayStr } from '../db';
 import { asyncH, badRequest, forbidden, notFound } from '../errors';
 import { audit } from '../audit';
-import { parseList, runList } from '../paging';
+import { parseList, runAggList } from '../paging';
 
 const router = Router();
 
+const numId = z.union([z.string(), z.number()]).transform((v) => Number(v));
+
 const createBody = z.object({
-  customer_id: z.string().uuid(),
-  item_id: z.string().uuid().optional().nullable(),
+  customer_id: numId,
+  item_id: numId.optional().nullable(),
   item_text: z.string().optional().nullable(),
   quantity: z.number().positive().default(1),
   unit_price: z.number().nonnegative().optional(),
   amount: z.number().nonnegative(),
   serial_numbers: z.string().optional().nullable(),
-  unit_ids: z.array(z.string().uuid()).optional(),
+  unit_ids: z.array(numId).optional(),
   assigned_at: z.string().optional(),
   notes: z.string().optional().nullable(),
 });
 
 /**
  * Record "customer took a device for amount Y".
- * Atomic: locks the item row, validates stock, decrements it, writes a stock
- * movement, marks serialized units, and inserts the assignment (the debit).
+ * Atomic: validates stock, decrements it, writes a stock movement, marks
+ * serialized units, and inserts the assignment (the debit).
  */
 router.post(
   '/',
@@ -31,85 +33,108 @@ router.post(
     if (!req.user!.permissions.includes('assignments.create')) throw forbidden();
     const body = createBody.parse(req.body);
     if (!body.item_id && !body.item_text) throw badRequest('Pick an inventory item or enter a free-text description');
-    const created = await withTransaction(async (client) => {
+    const created = await withTransaction(async (session) => {
       let itemName: string | null = null;
       let qty = body.quantity;
       if (body.item_id) {
-        const r = await client.query(`select * from items where id=$1 and deleted_at is null for update`, [body.item_id]);
-        const item = r.rows[0];
+        const item: any = await Item.findOne({ id: body.item_id, deleted_at: null }).session(session);
         if (!item) throw notFound('Item not found');
         if (item.status !== 'active') throw badRequest('Item is archived');
         if (body.unit_ids && body.unit_ids.length) qty = body.unit_ids.length;
-        if (Number(item.quantity) < qty) {
-          throw badRequest(`Not enough stock for "${item.name}" (available: ${item.quantity})`);
-        }
-        await client.query(`update items set quantity = quantity - $2, updated_at = now() where id = $1`, [item.id, qty]);
-        await client.query(
-          `insert into stock_movements (item_id, movement_type, quantity, to_warehouse_id, reason, performed_by, reference_type)
-           values ($1,'assignment',$2,null,$3,$4,'assignment_out')`,
-          [item.id, -qty, body.notes || 'Assigned to customer', req.user!.id]
+        if (item.quantity < qty) throw badRequest(`Not enough stock for "${item.name}" (available: ${item.quantity})`);
+        await Item.updateOne({ id: item.id }, { $inc: { quantity: -qty }, $set: { updated_at: new Date() } }, { session });
+        await createWithId(
+          StockMovement,
+          {
+            item_id: item.id, movement_type: 'assignment', quantity: -qty, to_warehouse_id: null,
+            reason: body.notes || 'Assigned to customer', performed_by: req.user!.id, reference_type: 'assignment_out',
+          },
+          session
         );
         for (const uid of body.unit_ids || []) {
-          const ur = await client.query(
-            `update item_units set status='assigned', assignment_id=null where id=$1 and item_id=$2 and status='in_stock' returning id`,
-            [uid, item.id]
+          const u = await ItemUnit.findOneAndUpdate(
+            { id: uid, item_id: item.id, status: 'in_stock' },
+            { $set: { status: 'assigned' } },
+            { session }
           );
-          if (!ur.rows[0]) throw badRequest('One of the selected serials is not in stock');
+          if (!u) throw badRequest('One of the selected serials is not in stock');
         }
         itemName = item.name;
       }
-      const r2 = await client.query(
-        `insert into assignments (customer_id, item_id, item_text, quantity, unit_price, amount, serial_numbers, assigned_at, notes, created_by)
-         values ($1,$2,$3,$4,$5,$6,$7,coalesce($8, current_date),$9,$10) returning *`,
-        [body.customer_id, body.item_id || null, body.item_text || itemName, qty,
-         body.unit_price ?? (qty > 0 ? body.amount / qty : 0), body.amount,
-         body.serial_numbers || null, body.assigned_at || null, body.notes || null, req.user!.id]
+      const a: any = await createWithId(
+        Assignment,
+        {
+          customer_id: body.customer_id,
+          item_id: body.item_id || null,
+          item_text: body.item_text || itemName,
+          quantity: qty,
+          unit_price: body.unit_price ?? (qty > 0 ? body.amount / qty : 0),
+          amount: body.amount,
+          serial_numbers: body.serial_numbers || null,
+          assigned_at: body.assigned_at || todayStr(),
+          notes: body.notes || null,
+          created_by: req.user!.id,
+        },
+        session
       );
       // link serialized units to the new assignment
       for (const uid of body.unit_ids || []) {
-        await client.query(`update item_units set assignment_id=$2 where id=$1`, [uid, r2.rows[0].id]);
+        await ItemUnit.updateOne({ id: uid }, { assignment_id: a.id }, { session });
       }
-      return r2.rows[0];
+      return a;
     });
-    await audit(req, { action: 'create', entity: 'assignment', entity_id: created.id, new_value: created });
-    res.status(201).json(created);
+    await audit(req, { action: 'create', entity: 'assignment', entity_id: created.id, new_value: strip(created.toObject()) });
+    res.status(201).json(strip(created.toObject()));
   })
 );
 
 router.get(
   '/',
   asyncH(async (req: Request, res: Response) => {
-    const lp = parseList(req, { assigned_at: 'a.assigned_at', amount: 'a.amount', customer: 'c.name' }, 'assigned_at');
-    const params: any[] = [];
-    let where = `a.deleted_at is null`;
-    if (req.user!.permissions.includes('data.own_only')) {
-      params.push(req.user!.id);
-      where += ` and a.created_by = $${params.length}`;
-    }
+    const lp = parseList(req, { assigned_at: 'assigned_at', amount: 'amount', customer: 'customer_name' }, 'assigned_at');
+    const match: any = { deleted_at: null };
+    if (req.user!.permissions.includes('data.own_only')) match.created_by = req.user!.id;
+    if (req.query.customer_id) match.customer_id = Number(req.query.customer_id);
+    if (req.query.status) match.status = req.query.status;
+    if (req.query.item_id) match.item_id = Number(req.query.item_id);
+    if (lp.from) match.assigned_at = { ...(match.assigned_at || {}), $gte: lp.from };
+    if (lp.to) match.assigned_at = { ...(match.assigned_at || {}), $lte: lp.to };
+
+    const pipeline: any[] = [
+      { $match: match },
+      {
+        $lookup: { from: 'customers', localField: 'customer_id', foreignField: 'id', as: 'c', pipeline: [{ $project: { name: 1, phone: 1, _id: 0 } }] },
+      },
+      { $unwind: '$c' },
+      {
+        $lookup: { from: 'items', localField: 'item_id', foreignField: 'id', as: 'i', pipeline: [{ $project: { name: 1, name_ar: 1, sku: 1, _id: 0 } }] },
+      },
+      {
+        $lookup: { from: 'users', localField: 'created_by', foreignField: 'id', as: 'u', pipeline: [{ $project: { name: 1, _id: 0 } }] },
+      },
+      {
+        $set: {
+          customer_name: '$c.name',
+          customer_phone: '$c.phone',
+          item_name: { $ifNull: [{ $arrayElemAt: ['$i.name', 0] }, null] },
+          item_name_ar: { $ifNull: [{ $arrayElemAt: ['$i.name_ar', 0] }, null] },
+          item_sku: { $ifNull: [{ $arrayElemAt: ['$i.sku', 0] }, null] },
+          created_by_name: { $ifNull: [{ $arrayElemAt: ['$u.name', 0] }, null] },
+        },
+      },
+    ];
     if (lp.search) {
-      params.push(`%${lp.search}%`);
-      where += ` and (c.name ilike $${params.length} or coalesce(i.name,'') ilike $${params.length} or coalesce(a.item_text,'') ilike $${params.length} or coalesce(a.serial_numbers,'') ilike $${params.length})`;
+      const s = rx(lp.search);
+      pipeline.push({
+        $match: {
+          $or: [
+            { 'c.name': s }, { 'i.name': s }, { item_text: s }, { serial_numbers: s },
+          ],
+        },
+      });
     }
-    if (req.query.customer_id) { params.push(req.query.customer_id); where += ` and a.customer_id = $${params.length}`; }
-    if (req.query.status) { params.push(req.query.status); where += ` and a.status = $${params.length}`; }
-    if (req.query.item_id) { params.push(req.query.item_id); where += ` and a.item_id = $${params.length}`; }
-    if (lp.from) { params.push(lp.from); where += ` and a.assigned_at >= $${params.length}`; }
-    if (lp.to) { params.push(lp.to); where += ` and a.assigned_at <= $${params.length}`; }
-    const result = await runList(
-      `select a.*, c.name as customer_name, c.phone as customer_phone, i.name as item_name, i.name_ar as item_name_ar,
-              i.sku as item_sku, u.name as created_by_name
-       from assignments a
-       join customers c on c.id = a.customer_id
-       left join items i on i.id = a.item_id
-       left join users u on u.id = a.created_by
-       where ${where}`,
-      `select count(*) from assignments a join customers c on c.id = a.customer_id left join items i on i.id = a.item_id where ${where}`,
-      params,
-      lp
-    );
-    result.rows = result.rows.map((r: any) => ({
-      ...r, quantity: Number(r.quantity), unit_price: Number(r.unit_price), amount: Number(r.amount), credited_amount: Number(r.credited_amount),
-    }));
+    pipeline.push({ $unset: ['c', 'i', 'u'] });
+    const result = await runAggList(Assignment, pipeline, lp.sort, lp);
     res.json(result);
   })
 );
@@ -117,14 +142,22 @@ router.get(
 router.get(
   '/:id',
   asyncH(async (req: Request, res: Response) => {
-    const r = await query(
-      `select a.*, c.name as customer_name, i.name as item_name from assignments a
-       join customers c on c.id = a.customer_id left join items i on i.id = a.item_id
-       where a.id = $1 and a.deleted_at is null`,
-      [req.params.id]
-    );
-    if (!r.rows[0]) throw notFound('Assignment not found');
-    res.json(r.rows[0]);
+    const { Assignment } = await import('../db');
+    const rows = await Assignment.aggregate([
+      { $match: { id: Number(req.params.id), deleted_at: null } },
+      { $lookup: { from: 'customers', localField: 'customer_id', foreignField: 'id', as: 'c', pipeline: [{ $project: { name: 1, _id: 0 } }] } },
+      { $unwind: '$c' },
+      { $lookup: { from: 'items', localField: 'item_id', foreignField: 'id', as: 'i', pipeline: [{ $project: { name: 1, _id: 0 } }] } },
+      {
+        $set: {
+          customer_name: '$c.name',
+          item_name: { $ifNull: [{ $arrayElemAt: ['$i.name', 0] }, null] },
+        },
+      },
+      { $unset: ['c', 'i', '_id'] },
+    ]);
+    if (!rows[0]) throw notFound('Assignment not found');
+    res.json(rows[0]);
   })
 );
 
@@ -138,18 +171,20 @@ router.patch(
       notes: z.string().optional().nullable(),
       assigned_at: z.string().optional(),
     }).parse(req.body);
-    const old = (await query(`select * from assignments where id=$1 and deleted_at is null`, [req.params.id])).rows[0];
+    const old: any = await Assignment.findOne({ id: Number(req.params.id), deleted_at: null }).lean();
     if (!old) throw notFound('Assignment not found');
     if (old.status === 'voided') throw badRequest('Cannot edit a voided assignment');
-    const r = await query(
-      `update assignments set amount=coalesce($2,amount), notes=$3, assigned_at=coalesce($4,assigned_at),
-        unit_price = case when $2::numeric is not null and quantity > 0 then $2/quantity else unit_price end,
-        updated_at=now()
-       where id=$1 returning *`,
-      [req.params.id, body.amount ?? null, body.notes ?? old.notes, body.assigned_at || null]
-    );
-    await audit(req, { action: 'update', entity: 'assignment', entity_id: req.params.id, old_value: old, new_value: r.rows[0] });
-    res.json(r.rows[0]);
+    const update: any = { updated_at: new Date() };
+    if (body.amount != null) {
+      update.amount = body.amount;
+      if (old.quantity > 0) update.unit_price = body.amount / old.quantity;
+    }
+    if (body.notes !== undefined) update.notes = body.notes;
+    if (body.assigned_at) update.assigned_at = body.assigned_at;
+    await Assignment.updateOne({ id: old.id }, update);
+    const fresh: any = strip(await Assignment.findOne({ id: old.id }).lean());
+    await audit(req, { action: 'update', entity: 'assignment', entity_id: req.params.id, old_value: strip(old), new_value: fresh });
+    res.json(fresh);
   })
 );
 
@@ -163,28 +198,36 @@ router.post(
       credited_amount: z.number().nonnegative().optional(), // portion refunded to the customer's balance (default: full amount)
       notes: z.string().optional().nullable(),
     }).parse(req.body || {});
-    const result = await withTransaction(async (client) => {
-      const r = await client.query(`select * from assignments where id=$1 and deleted_at is null for update`, [req.params.id]);
-      const a = r.rows[0];
+    const result = await withTransaction(async (session) => {
+      const a: any = await Assignment.findOne({ id: Number(req.params.id), deleted_at: null }).session(session);
       if (!a) throw notFound('Assignment not found');
       if (a.status !== 'taken') throw badRequest('Only taken assignments can be returned');
-      const credit = body.credited_amount ?? Number(a.amount);
-      if (credit > Number(a.amount)) throw badRequest('Credited amount cannot exceed the original amount');
+      const credit = body.credited_amount ?? a.amount;
+      if (credit > a.amount) throw badRequest('Credited amount cannot exceed the original amount');
       if (a.item_id) {
-        await client.query(`update items set quantity = quantity + $2, updated_at=now() where id=$1`, [a.item_id, a.quantity]);
-        await client.query(
-          `insert into stock_movements (item_id, movement_type, quantity, reason, performed_by, reference_type, reference_id)
-           values ($1,'return',$2,$3,$4,'assignment_return',$5)`,
-          [a.item_id, a.quantity, body.notes || `Return of assignment ${String(a.id).slice(0, 8)}`, req.user!.id, a.id]
+        await Item.updateOne({ id: a.item_id }, { $inc: { quantity: a.quantity }, $set: { updated_at: new Date() } }, { session });
+        await createWithId(
+          StockMovement,
+          {
+            item_id: a.item_id, movement_type: 'return', quantity: a.quantity,
+            reason: body.notes || `Return of assignment ${String(a.id).slice(0, 8)}`,
+            performed_by: req.user!.id, reference_type: 'assignment_return', reference_id: a.id,
+          },
+          session
         );
-        await client.query(`update item_units set status='in_stock', assignment_id=null where assignment_id=$1`, [a.id]);
+        await ItemUnit.updateMany({ assignment_id: a.id }, { $set: { status: 'in_stock', assignment_id: null } }, { session });
       }
-      const r2 = await client.query(
-        `update assignments set status='returned', returned_at=now(), credited_amount=$2, notes=coalesce($3,notes), updated_at=now()
-         where id=$1 returning *`,
-        [a.id, credit, body.notes || null]
+      await Assignment.updateOne(
+        { id: a.id },
+        {
+          status: 'returned', returned_at: new Date(), credited_amount: credit,
+          notes: body.notes || a.notes, updated_at: new Date(),
+        },
+        { session }
       );
-      return { old: a, updated: r2.rows[0] };
+      const old = a.toObject ? strip(a.toObject()) : { ...a };
+      const updated = await Assignment.findOne({ id: a.id }).session(session).lean();
+      return { old, updated: strip(updated) };
     });
     await audit(req, { action: 'return', entity: 'assignment', entity_id: req.params.id, old_value: result.old, new_value: result.updated });
     res.json(result.updated);
@@ -198,25 +241,30 @@ router.post(
     const perms = req.user!.permissions;
     if (!perms.includes('assignments.approve') && !perms.includes('assignments.delete')) throw forbidden();
     const body = z.object({ reason: z.string().min(3) }).parse(req.body);
-    const result = await withTransaction(async (client) => {
-      const r = await client.query(`select * from assignments where id=$1 and deleted_at is null for update`, [req.params.id]);
-      const a = r.rows[0];
+    const result = await withTransaction(async (session) => {
+      const a: any = await Assignment.findOne({ id: Number(req.params.id), deleted_at: null }).session(session);
       if (!a) throw notFound('Assignment not found');
       if (a.status === 'voided') throw badRequest('Assignment is already voided');
       if (a.item_id && a.status === 'taken') {
-        await client.query(`update items set quantity = quantity + $2, updated_at=now() where id=$1`, [a.item_id, a.quantity]);
-        await client.query(
-          `insert into stock_movements (item_id, movement_type, quantity, reason, performed_by, reference_type, reference_id)
-           values ($1,'return',$2,$3,$4,'assignment_void',$5)`,
-          [a.item_id, a.quantity, `Void: ${body.reason}`, req.user!.id, a.id]
+        await Item.updateOne({ id: a.item_id }, { $inc: { quantity: a.quantity }, $set: { updated_at: new Date() } }, { session });
+        await createWithId(
+          StockMovement,
+          {
+            item_id: a.item_id, movement_type: 'return', quantity: a.quantity,
+            reason: `Void: ${body.reason}`, performed_by: req.user!.id, reference_type: 'assignment_void', reference_id: a.id,
+          },
+          session
         );
-        await client.query(`update item_units set status='in_stock', assignment_id=null where assignment_id=$1`, [a.id]);
+        await ItemUnit.updateMany({ assignment_id: a.id }, { $set: { status: 'in_stock', assignment_id: null } }, { session });
       }
-      const r2 = await client.query(
-        `update assignments set status='voided', void_reason=$2, credited_amount=amount, updated_at=now() where id=$1 returning *`,
-        [req.params.id, body.reason]
+      await Assignment.updateOne(
+        { id: a.id },
+        { status: 'voided', void_reason: body.reason, credited_amount: a.amount, updated_at: new Date() },
+        { session }
       );
-      return { old: a, updated: r2.rows[0] };
+      const old = a.toObject ? strip(a.toObject()) : { ...a };
+      const updated = await Assignment.findOne({ id: a.id }).session(session).lean();
+      return { old, updated: strip(updated) };
     });
     await audit(req, { action: 'void', entity: 'assignment', entity_id: req.params.id, old_value: result.old, new_value: { ...result.updated, reason: body.reason } });
     res.json(result.updated);

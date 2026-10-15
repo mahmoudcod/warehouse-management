@@ -1,61 +1,89 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { query, withTransaction } from '../db';
+import { Item, ItemUnit, StockMovement, Category, Warehouse, createWithId, withTransaction, rx, r2, strip } from '../db';
 import { asyncH, badRequest, forbidden, notFound } from '../errors';
 import { audit } from '../audit';
 import { parseList, runList } from '../paging';
 
 const router = Router();
 
+const numId = z.union([z.string(), z.number()]).transform((v) => Number(v));
+
 const itemBody = z.object({
   name: z.string().min(2),
   name_ar: z.string().optional().nullable(),
   sku: z.string().optional().nullable(),
   barcode: z.string().optional().nullable(),
-  category_id: z.string().uuid().optional().nullable(),
+  category_id: numId.optional().nullable(),
   brand: z.string().optional().nullable(),
   model: z.string().optional().nullable(),
   cost_price: z.number().nonnegative().optional(),
   selling_price: z.number().nonnegative().optional(),
   min_stock_level: z.number().nonnegative().optional(),
-  warehouse_id: z.string().uuid().optional().nullable(),
+  warehouse_id: numId.optional().nullable(),
   track_serials: z.boolean().optional(),
   photo_url: z.string().optional().nullable(),
   status: z.enum(['active', 'archived']).optional(),
 });
 
+/** in-stock serialized-unit counts per item id */
+async function unitsInStockMap(itemIds: number[]): Promise<Map<number, number>> {
+  if (!itemIds.length) return new Map();
+  const rows = await ItemUnit.aggregate([
+    { $match: { item_id: { $in: itemIds }, status: 'in_stock', deleted_at: null } },
+    { $group: { _id: '$item_id', c: { $sum: 1 } } },
+  ]);
+  return new Map(rows.map((r: any) => [r._id, r.c]));
+}
+
+async function decorateItems(docs: any[]) {
+  const rows = docs.map(strip);
+  const unitCounts = await unitsInStockMap(rows.map((r: any) => r.id));
+  const catIds = [...new Set(rows.map((r: any) => r.category_id).filter((x) => x != null))];
+  const whIds = [...new Set(rows.map((r: any) => r.warehouse_id).filter((x) => x != null))];
+  const [cats, whs] = await Promise.all([
+    catIds.length ? Category.find({ id: { $in: catIds } }).lean() : [],
+    whIds.length ? Warehouse.find({ id: { $in: whIds } }).lean() : [],
+  ]);
+  const catById = new Map<number, any>(cats.map((c: any) => [c.id, c] as [number, any]));
+  const whById = new Map<number, any>(whs.map((w: any) => [w.id, w] as [number, any]));
+  return rows.map((r: any) => {
+    const cat = r.category_id ? catById.get(r.category_id) : null;
+    const wh = r.warehouse_id ? whById.get(r.warehouse_id) : null;
+    return {
+      ...r,
+      category_name: cat?.name ?? null,
+      category_name_ar: cat?.name_ar ?? null,
+      warehouse_name: wh?.name ?? null,
+      warehouse_name_ar: wh?.name_ar ?? null,
+      stock_cost_value: r2(r.cost_price * r.quantity),
+      stock_sell_value: r2(r.selling_price * r.quantity),
+      low_stock: r.quantity <= r.min_stock_level && r.min_stock_level > 0,
+      units_in_stock: unitCounts.get(r.id) ?? 0,
+    };
+  });
+}
+
 router.get(
   '/',
   asyncH(async (req: Request, res: Response) => {
-    const lp = parseList(req, { name: 'i.name', quantity: 'i.quantity', cost: 'i.cost_price', price: 'i.selling_price', created_at: 'i.created_at', sku: 'i.sku' }, 'created_at');
-    const params: any[] = [];
-    let where = `i.deleted_at is null`;
+    const lp = parseList(req, { name: 'name', quantity: 'quantity', cost: 'cost_price', price: 'selling_price', created_at: 'created_at', sku: 'sku' }, 'created_at');
+    const filter: any = { deleted_at: null };
     if (lp.search) {
-      params.push(`%${lp.search}%`);
-      where += ` and (i.name ilike $1 or coalesce(i.name_ar,'') ilike $1 or coalesce(i.sku,'') ilike $1 or coalesce(i.barcode,'') ilike $1 or coalesce(i.brand,'') ilike $1
-        or exists(select 1 from item_units u where u.item_id = i.id and u.serial ilike $1))`;
+      const s = rx(lp.search);
+      const or: any[] = [{ name: s }, { name_ar: s }, { sku: s }, { barcode: s }, { brand: s }];
+      const unitItems = await ItemUnit.find({ serial: s }).lean();
+      if (unitItems.length) or.push({ id: { $in: [...new Set(unitItems.map((u: any) => u.item_id))] } });
+      filter.$or = or;
     }
-    if (req.query.category_id) { params.push(req.query.category_id); where += ` and i.category_id = $${params.length}`; }
-    if (req.query.warehouse_id) { params.push(req.query.warehouse_id); where += ` and i.warehouse_id = $${params.length}`; }
-    if (req.query.status) { params.push(req.query.status); where += ` and i.status = $${params.length}`; }
-    if (req.query.low_stock === 'true') where += ` and i.quantity <= i.min_stock_level and i.min_stock_level > 0`;
-    const result = await runList(
-      `select i.*, c.name as category_name, c.name_ar as category_name_ar,
-              w.name as warehouse_name, w.name_ar as warehouse_name_ar,
-              (i.cost_price * i.quantity)::float8 as stock_cost_value,
-              (i.selling_price * i.quantity)::float8 as stock_sell_value,
-              (i.quantity <= i.min_stock_level and i.min_stock_level > 0) as low_stock,
-              (select count(*) from item_units u where u.item_id = i.id and u.status='in_stock' and u.deleted_at is null) as units_in_stock
-       from items i
-       left join categories c on c.id = i.category_id
-       left join warehouses w on w.id = i.warehouse_id
-       where ${where}`,
-      `select count(*) from items i where ${where}`,
-      params,
-      lp
-    );
-    // normalize numerics
-    result.rows = result.rows.map((r: any) => ({ ...r, quantity: Number(r.quantity), cost_price: Number(r.cost_price), selling_price: Number(r.selling_price), min_stock_level: Number(r.min_stock_level), units_in_stock: Number(r.units_in_stock) }));
+    if (req.query.category_id) filter.category_id = Number(req.query.category_id);
+    if (req.query.warehouse_id) filter.warehouse_id = Number(req.query.warehouse_id);
+    if (req.query.status) filter.status = req.query.status;
+    if (req.query.low_stock === 'true') {
+      filter.$expr = { $and: [{ $lte: ['$quantity', '$min_stock_level'] }, { $gt: ['$min_stock_level', 0] }] };
+    }
+    const result = await runList(Item, filter, lp);
+    result.rows = await decorateItems(result.rows);
     res.json(result);
   })
 );
@@ -65,45 +93,58 @@ router.get(
   '/lookup/:code',
   asyncH(async (req: Request, res: Response) => {
     const code = req.params.code;
-    const r = await query(
-      `select i.*, w.name as warehouse_name from items i
-       left join warehouses w on w.id = i.warehouse_id
-       where i.deleted_at is null and (i.sku = $1 or i.barcode = $1
-         or exists(select 1 from item_units u where u.item_id = i.id and u.serial = $1 and u.deleted_at is null))
-       limit 1`,
-      [code]
-    );
-    res.json({ item: r.rows[0] || null });
+    const unit = await ItemUnit.findOne({ serial: code, deleted_at: null }).lean();
+    const filter: any = { deleted_at: null, $or: [{ sku: code }, { barcode: code }] };
+    if (unit) filter.$or.push({ id: unit.item_id });
+    const item: any = await Item.findOne(filter).lean();
+    if (!item) return res.json({ item: null });
+    const wh = item.warehouse_id ? await Warehouse.findOne({ id: item.warehouse_id }).lean() : null;
+    res.json({ item: { ...strip(item), warehouse_name: wh?.name ?? null } });
   })
 );
 
 router.get(
   '/:id',
   asyncH(async (req: Request, res: Response) => {
-    const r = await query(
-      `select i.*, c.name as category_name, w.name as warehouse_name from items i
-       left join categories c on c.id = i.category_id
-       left join warehouses w on w.id = i.warehouse_id
-       where i.id = $1 and i.deleted_at is null`,
-      [req.params.id]
-    );
-    if (!r.rows[0]) throw notFound('Item not found');
-    const item = r.rows[0];
-    item.quantity = Number(item.quantity);
-    const units = await query(
-      `select u.*, a.customer_id, c.name as customer_name from item_units u
-       left join assignments a on a.id = u.assignment_id
-       left join customers c on c.id = a.customer_id
-       where u.item_id = $1 and u.deleted_at is null order by u.created_at desc limit 200`,
-      [req.params.id]
-    );
-    const movements = await query(
-      `select m.*, u.name as performed_by_name from stock_movements m
-       left join users u on u.id = m.performed_by
-       where m.item_id = $1 order by m.created_at desc limit 100`,
-      [req.params.id]
-    );
-    res.json({ ...item, units: units.rows, movements: movements.rows });
+    const item: any = await Item.findOne({ id: Number(req.params.id), deleted_at: null }).lean();
+    if (!item) throw notFound('Item not found');
+    const [cat, wh] = await Promise.all([
+      item.category_id ? Category.findOne({ id: item.category_id }).lean() : null,
+      item.warehouse_id ? Warehouse.findOne({ id: item.warehouse_id }).lean() : null,
+    ]);
+    const units = await ItemUnit.find({ item_id: item.id, deleted_at: null })
+      .sort({ created_at: -1 })
+      .limit(200)
+      .lean();
+    // attach assignment → customer info
+    const aIds = [...new Set(units.map((u: any) => u.assignment_id).filter((x) => x != null))];
+    const unitRows = await (async () => {
+      if (!aIds.length) return units.map((u: any) => ({ ...strip(u), customer_id: null, customer_name: null }));
+      const { Assignment, Customer } = await import('../db');
+      const assignments: any[] = await Assignment.find({ id: { $in: aIds } }).lean();
+      const cIds = [...new Set(assignments.map((a: any) => a.customer_id))];
+      const customers: any[] = await Customer.find({ id: { $in: cIds } }).lean();
+      const aById = new Map<number, any>(assignments.map((a: any) => [a.id, a] as [number, any]));
+      const cById = new Map<number, any>(customers.map((c: any) => [c.id, c] as [number, any]));
+      return units.map((u: any) => {
+        const a = u.assignment_id ? aById.get(u.assignment_id) : null;
+        const c = a ? cById.get(a.customer_id) : null;
+        return { ...strip(u), customer_id: a?.customer_id ?? null, customer_name: c?.name ?? null };
+      });
+    })();
+    const movements = await StockMovement.find({ item_id: item.id }).sort({ created_at: -1 }).limit(100).lean();
+    const userIds = [...new Set(movements.map((m: any) => m.performed_by).filter((x) => x != null))];
+    const { User } = await import('../db');
+    const users = userIds.length ? await User.find({ id: { $in: userIds } }).lean() : [];
+    const uById = new Map(users.map((u: any) => [u.id, u]));
+    res.json({
+      ...strip(item),
+      category_name: cat?.name ?? null,
+      warehouse_name: wh?.name ?? null,
+      quantity: Number(item.quantity),
+      units: unitRows,
+      movements: movements.map((m: any) => ({ ...strip(m), performed_by_name: uById.get(m.performed_by)?.name ?? null })),
+    });
   })
 );
 
@@ -114,41 +155,56 @@ router.post(
     const body = itemBody.parse(req.body);
     const initialQty = Number(req.body.initial_quantity ?? 0);
     const serials: string[] = Array.isArray(req.body.serials) ? req.body.serials : [];
-    const created = await withTransaction(async (client) => {
-      const r = await client.query(
-        `insert into items (name, name_ar, sku, barcode, category_id, brand, model, cost_price, selling_price,
-          quantity, min_stock_level, warehouse_id, track_serials, photo_url)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning *`,
-        [body.name, body.name_ar || null, body.sku || null, body.barcode || null, body.category_id || null,
-         body.brand || null, body.model || null, body.cost_price ?? 0, body.selling_price ?? 0,
-         body.track_serials ? serials.length : initialQty, body.min_stock_level ?? 0,
-         body.warehouse_id || null, body.track_serials ?? false, body.photo_url || null]
+    const created = await withTransaction(async (session) => {
+      const item: any = await createWithId(
+        Item,
+        {
+          name: body.name,
+          name_ar: body.name_ar || null,
+          sku: body.sku || null,
+          barcode: body.barcode || null,
+          category_id: body.category_id || null,
+          brand: body.brand || null,
+          model: body.model || null,
+          cost_price: body.cost_price ?? 0,
+          selling_price: body.selling_price ?? 0,
+          quantity: body.track_serials && serials.length ? serials.length : initialQty,
+          min_stock_level: body.min_stock_level ?? 0,
+          warehouse_id: body.warehouse_id || null,
+          track_serials: body.track_serials ?? false,
+          photo_url: body.photo_url || null,
+        },
+        session
       );
-      const item = r.rows[0];
       if (initialQty > 0 && !(body.track_serials && serials.length)) {
-        await client.query(
-          `insert into stock_movements (item_id, movement_type, quantity, to_warehouse_id, reason, performed_by, reference_type)
-           values ($1,'purchase',$2,$3,$4,$5,'item_create')`,
-          [item.id, initialQty, body.warehouse_id || null, 'Initial stock on item creation', req.user!.id]
+        await createWithId(
+          StockMovement,
+          {
+            item_id: item.id, movement_type: 'purchase', quantity: initialQty,
+            to_warehouse_id: body.warehouse_id || null,
+            reason: 'Initial stock on item creation', performed_by: req.user!.id, reference_type: 'item_create',
+          },
+          session
         );
       }
       for (const s of serials) {
-        await client.query(
-          `insert into item_units (item_id, serial, warehouse_id) values ($1,$2,$3)`,
-          [item.id, s.trim(), body.warehouse_id || null]
-        );
+        await createWithId(ItemUnit, { item_id: item.id, serial: s.trim(), warehouse_id: body.warehouse_id || null }, session);
       }
       if (serials.length) {
-        await client.query(
-          `insert into stock_movements (item_id, movement_type, quantity, to_warehouse_id, reason, performed_by, reference_type)
-           values ($1,'purchase',$2,$3,$4,$5,'item_create')`,
-          [item.id, serials.length, body.warehouse_id || null, `Initial stock: ${serials.length} serialized units`, req.user!.id]
+        await createWithId(
+          StockMovement,
+          {
+            item_id: item.id, movement_type: 'purchase', quantity: serials.length,
+            to_warehouse_id: body.warehouse_id || null,
+            reason: `Initial stock: ${serials.length} serialized units`, performed_by: req.user!.id, reference_type: 'item_create',
+          },
+          session
         );
       }
       return item;
     });
-    await audit(req, { action: 'create', entity: 'item', entity_id: created.id, new_value: created });
-    res.status(201).json(created);
+    await audit(req, { action: 'create', entity: 'item', entity_id: created.id, new_value: strip(created.toObject()) });
+    res.status(201).json(strip(created.toObject()));
   })
 );
 
@@ -157,22 +213,27 @@ router.patch(
   asyncH(async (req: Request, res: Response) => {
     if (!req.user!.permissions.includes('inventory.edit')) throw forbidden();
     const body = itemBody.partial().parse(req.body);
-    const old = (await query(`select * from items where id=$1 and deleted_at is null`, [req.params.id])).rows[0];
+    const old: any = await Item.findOne({ id: Number(req.params.id), deleted_at: null }).lean();
     if (!old) throw notFound('Item not found');
-    const r = await query(
-      `update items set name=coalesce($2,name), name_ar=$3, sku=$4, barcode=$5, category_id=$6, brand=$7, model=$8,
-        cost_price=coalesce($9,cost_price), selling_price=coalesce($10,selling_price),
-        min_stock_level=coalesce($11,min_stock_level), warehouse_id=$12, track_serials=coalesce($13,track_serials),
-        photo_url=coalesce($14,photo_url), status=coalesce($15,status), updated_at=now()
-       where id=$1 returning *`,
-      [req.params.id, body.name, body.name_ar ?? old.name_ar, body.sku ?? old.sku, body.barcode ?? old.barcode,
-       body.category_id ?? old.category_id, body.brand ?? old.brand, body.model ?? old.model,
-       body.cost_price ?? null, body.selling_price ?? null, body.min_stock_level ?? null,
-       body.warehouse_id ?? old.warehouse_id, body.track_serials ?? null, body.photo_url ?? null,
-       body.status ?? null]
-    );
-    await audit(req, { action: 'update', entity: 'item', entity_id: req.params.id, old_value: old, new_value: r.rows[0] });
-    res.json(r.rows[0]);
+    const update: any = { updated_at: new Date() };
+    if (body.name != null) update.name = body.name;
+    if (body.name_ar !== undefined) update.name_ar = body.name_ar;
+    if (body.sku !== undefined) update.sku = body.sku;
+    if (body.barcode !== undefined) update.barcode = body.barcode;
+    if (body.category_id !== undefined) update.category_id = body.category_id;
+    if (body.brand !== undefined) update.brand = body.brand;
+    if (body.model !== undefined) update.model = body.model;
+    if (body.cost_price != null) update.cost_price = body.cost_price;
+    if (body.selling_price != null) update.selling_price = body.selling_price;
+    if (body.min_stock_level != null) update.min_stock_level = body.min_stock_level;
+    if (body.warehouse_id !== undefined) update.warehouse_id = body.warehouse_id;
+    if (body.track_serials != null) update.track_serials = body.track_serials;
+    if (body.photo_url != null) update.photo_url = body.photo_url;
+    if (body.status != null) update.status = body.status;
+    await Item.updateOne({ id: old.id }, update);
+    const fresh: any = strip(await Item.findOne({ id: old.id }).lean());
+    await audit(req, { action: 'update', entity: 'item', entity_id: req.params.id, old_value: strip(old), new_value: fresh });
+    res.json(fresh);
   })
 );
 
@@ -185,21 +246,28 @@ router.post(
       delta: z.number(), // positive = add, negative = remove
       reason: z.string().min(3),
     }).parse(req.body);
-    const result = await withTransaction(async (client) => {
-      const r = await client.query(`select * from items where id=$1 and deleted_at is null for update`, [req.params.id]);
-      const item = r.rows[0];
+    const result = await withTransaction(async (session) => {
+      const item: any = await Item.findOneAndUpdate(
+        { id: Number(req.params.id), deleted_at: null },
+        { $inc: { quantity: body.delta }, $set: { updated_at: new Date() } },
+        { new: true, session }
+      ).lean();
       if (!item) throw notFound('Item not found');
-      const newQty = Number(item.quantity) + body.delta;
-      if (newQty < 0) throw badRequest(`Adjustment would make stock negative (current: ${item.quantity})`);
-      await client.query(`update items set quantity=$2, updated_at=now() where id=$1`, [item.id, newQty]);
-      await client.query(
-        `insert into stock_movements (item_id, movement_type, quantity, reason, performed_by, reference_type)
-         values ($1,'adjustment',$2,$3,$4,'manual_adjustment')`,
-        [item.id, body.delta, body.reason, req.user!.id]
+      if (item.quantity < 0) throw badRequest(`Adjustment would make stock negative (current: ${item.quantity - body.delta})`);
+      await createWithId(
+        StockMovement,
+        {
+          item_id: item.id, movement_type: 'adjustment', quantity: body.delta,
+          reason: body.reason, performed_by: req.user!.id, reference_type: 'manual_adjustment',
+        },
+        session
       );
-      return { item_id: item.id, quantity: newQty };
+      return { item_id: item.id, quantity: item.quantity };
     });
-    await audit(req, { action: 'stock_adjustment', entity: 'item', entity_id: req.params.id, old_value: { quantity: result.quantity - body.delta }, new_value: { quantity: result.quantity, reason: body.reason } });
+    await audit(req, {
+      action: 'stock_adjustment', entity: 'item', entity_id: req.params.id,
+      old_value: { quantity: result.quantity - body.delta }, new_value: { quantity: result.quantity, reason: body.reason },
+    });
     res.json(result);
   })
 );
@@ -208,10 +276,10 @@ router.delete(
   '/:id',
   asyncH(async (req: Request, res: Response) => {
     if (!req.user!.permissions.includes('inventory.delete')) throw forbidden();
-    const old = (await query(`select * from items where id=$1 and deleted_at is null`, [req.params.id])).rows[0];
+    const old: any = await Item.findOne({ id: Number(req.params.id), deleted_at: null }).lean();
     if (!old) throw notFound('Item not found');
-    await query(`update items set deleted_at=now(), status='archived' where id=$1`, [req.params.id]);
-    await audit(req, { action: 'delete', entity: 'item', entity_id: req.params.id, old_value: old });
+    await Item.updateOne({ id: old.id }, { deleted_at: new Date(), status: 'archived' });
+    await audit(req, { action: 'delete', entity: 'item', entity_id: req.params.id, old_value: strip(old) });
     res.json({ ok: true });
   })
 );

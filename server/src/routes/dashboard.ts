@@ -1,5 +1,8 @@
 import { Router, Request, Response } from 'express';
-import { query } from '../db';
+import {
+  Item, Assignment, Payment, Transaction, TransactionCategory, Customer,
+  balanceMap, overdueCustomerSet, r2, todayStr, strip,
+} from '../db';
 import { asyncH } from '../errors';
 
 const router = Router();
@@ -18,140 +21,226 @@ router.get(
     const canFinancials = req.user!.permissions.includes('customers.view_financials');
     const canAccounting = req.user!.permissions.includes('accounting.view');
 
-    const [stock, devicesOut, receivables, collected, incomeExpense, lowStock] = await Promise.all([
-      query(
-        `select coalesce(sum(quantity),0)::float8 as total_quantity,
-                coalesce(sum(quantity * cost_price),0)::float8 as stock_cost_value,
-                coalesce(sum(quantity * selling_price),0)::float8 as stock_sell_value
-         from items where deleted_at is null and status='active'`
-      ),
-      query(
-        `select count(*) as count, coalesce(sum(quantity),0)::float8 as quantity,
-                coalesce(sum(amount - credited_amount),0)::float8 as amount
-         from assignments where status='taken' and deleted_at is null`
-      ),
-      canFinancials
-        ? query(`select coalesce(sum(balance),0)::float8 as total from customer_balances where balance > 0`)
-        : Promise.resolve({ rows: [{ total: null }] }),
-      canFinancials
-        ? query(
-            `select coalesce(sum(amount),0)::float8 as total from payments
-             where status='active' and deleted_at is null and paid_at between $1 and $2`,
-            [from, to]
-          )
-        : Promise.resolve({ rows: [{ total: null }] }),
-      canAccounting
-        ? query(
-            `select
-              coalesce(sum(case when type='income' then amount else 0 end),0)::float8 as income,
-              coalesce(sum(case when type='expense' then amount else 0 end),0)::float8 as expense
-             from transactions
-             where status='active' and deleted_at is null and transfer_id is null and occurred_at between $1 and $2`,
-            [from, to]
-          )
-        : Promise.resolve({ rows: [{ income: null, expense: null }] }),
-      query(
-        `select id, name, name_ar, quantity::float8 as quantity, min_stock_level::float8 as min_stock_level, sku
-         from items
-         where deleted_at is null and status='active' and min_stock_level > 0 and quantity <= min_stock_level
-         order by (quantity - min_stock_level) asc limit 10`
-      ),
+    const [stockAgg, devicesOutAgg, lowStock, txRangeAgg, txMonthsAgg, stockByCategoryAgg, paymentsRangeAgg, paymentsMonthsAgg] =
+      await Promise.all([
+        Item.aggregate([
+          { $match: { deleted_at: null, status: 'active' } },
+          {
+            $group: {
+              _id: null,
+              total_quantity: { $sum: '$quantity' },
+              stock_cost_value: { $sum: { $multiply: ['$quantity', '$cost_price'] } },
+              stock_sell_value: { $sum: { $multiply: ['$quantity', '$selling_price'] } },
+            },
+          },
+        ]),
+        Assignment.aggregate([
+          { $match: { status: 'taken', deleted_at: null } },
+          {
+            $group: {
+              _id: null,
+              count: { $sum: 1 },
+              quantity: { $sum: '$quantity' },
+              amount: { $sum: { $subtract: ['$amount', '$credited_amount'] } },
+            },
+          },
+        ]),
+        Item.aggregate([
+          { $match: { deleted_at: null, status: 'active', min_stock_level: { $gt: 0 }, $expr: { $lte: ['$quantity', '$min_stock_level'] } } },
+          { $set: { stock_gap: { $subtract: ['$quantity', '$min_stock_level'] } } },
+          { $sort: { stock_gap: 1 } },
+          { $limit: 10 },
+          { $unset: ['stock_gap', '_id'] },
+          {
+            $set: {
+              quantity: { $toDouble: '$quantity' },
+              min_stock_level: { $toDouble: '$min_stock_level' },
+            },
+          },
+        ]),
+        canAccounting
+          ? Transaction.aggregate([
+              { $match: { status: 'active', deleted_at: null, transfer_id: null, occurred_at: { $gte: from, $lte: to } } },
+              {
+                $group: {
+                  _id: null,
+                  income: { $sum: { $cond: [{ $eq: ['$type', 'income'] }, '$amount', 0] } },
+                  expense: { $sum: { $cond: [{ $eq: ['$type', 'expense'] }, '$amount', 0] } },
+                },
+              },
+            ])
+          : Promise.resolve([]),
+        canAccounting
+          ? Transaction.aggregate([
+              { $match: { status: 'active', deleted_at: null, transfer_id: null, occurred_at: { $gte: monthsBack } } },
+              {
+                $group: {
+                  _id: { $substrCP: ['$occurred_at', 0, 7] },
+                  income: { $sum: { $cond: [{ $eq: ['$type', 'income'] }, '$amount', 0] } },
+                  expense: { $sum: { $cond: [{ $eq: ['$type', 'expense'] }, '$amount', 0] } },
+                },
+              },
+              { $set: { month: '$_id' } },
+              { $sort: { month: 1 } },
+              { $unset: '_id' },
+            ])
+          : Promise.resolve([]),
+        Item.aggregate([
+          { $match: { deleted_at: null } },
+          {
+            $lookup: { from: 'categories', localField: 'category_id', foreignField: 'id', as: 'c', pipeline: [{ $project: { name: 1, name_ar: 1, _id: 0 } }] },
+          },
+          {
+            $group: {
+              _id: '$category_id',
+              category: { $first: { $ifNull: [{ $arrayElemAt: ['$c.name', 0] }, 'Uncategorized'] } },
+              category_ar: { $first: { $ifNull: [{ $arrayElemAt: ['$c.name_ar', 0] }, { $ifNull: [{ $arrayElemAt: ['$c.name', 0] }, 'بدون تصنيف'] }] } },
+              quantity: { $sum: '$quantity' },
+              value: { $sum: { $multiply: ['$quantity', '$cost_price'] } },
+            },
+          },
+          { $match: { quantity: { $gt: 0 } } },
+          { $sort: { value: -1 } },
+          { $unset: '_id' },
+        ]),
+        canFinancials
+          ? Payment.aggregate([
+              { $match: { status: 'active', deleted_at: null, paid_at: { $gte: from, $lte: to } } },
+              { $group: { _id: null, total: { $sum: '$amount' } } },
+            ])
+          : Promise.resolve([]),
+        canFinancials
+          ? Payment.aggregate([
+              { $match: { status: 'active', deleted_at: null, paid_at: { $gte: monthsBack } } },
+              { $group: { _id: { $substrCP: ['$paid_at', 0, 7] }, total: { $sum: '$amount' } } },
+              { $set: { month: '$_id' } },
+              { $sort: { month: 1 } },
+              { $unset: '_id' },
+            ])
+          : Promise.resolve([]),
+      ]);
+
+    // receivables / top customers (financials only)
+    let totalReceivables: number | null = null;
+    let topCustomers: any[] = [];
+    if (canFinancials) {
+      const customers = await Customer.find({ deleted_at: null }).lean();
+      const balances = await balanceMap(customers.map((c: any) => c.id));
+      let sum = 0;
+      const all: any[] = [];
+      for (const c of customers as any[]) {
+        const b = balances.get(c.id);
+        if (b && b.balance > 0) {
+          sum += b.balance;
+          all.push({ id: c.id, name: c.name, balance: b.balance });
+        }
+      }
+      totalReceivables = r2(sum);
+      topCustomers = all.sort((a, b) => b.balance - a.balance).slice(0, 5);
+    }
+
+    const recentAssignments = await Assignment.aggregate([
+      { $match: { deleted_at: null } },
+      { $sort: { created_at: -1 } },
+      { $limit: 5 },
+      {
+        $lookup: { from: 'customers', localField: 'customer_id', foreignField: 'id', as: 'c', pipeline: [{ $project: { name: 1, _id: 0 } }] },
+      },
+      { $unwind: '$c' },
+      {
+        $lookup: { from: 'items', localField: 'item_id', foreignField: 'id', as: 'i', pipeline: [{ $project: { name: 1, name_ar: 1, _id: 0 } }] },
+      },
+      {
+        $set: {
+          customer_name: '$c.name',
+          item_name: { $ifNull: [{ $arrayElemAt: ['$i.name', 0] }, '$item_text'] },
+          item_name_ar: { $ifNull: [{ $arrayElemAt: ['$i.name_ar', 0] }, { $ifNull: [{ $arrayElemAt: ['$i.name', 0] }, '$item_text'] }] },
+        },
+      },
+      { $project: { _id: 0, id: 1, customer_name: 1, item_name: 1, item_name_ar: 1, amount: 1, assigned_at: 1, status: 1 } },
     ]);
 
-    const [incomeVsExpense, stockByCategory, topCustomers, monthlyCollections] = await Promise.all([
-      canAccounting
-        ? query(
-            `select to_char(date_trunc('month', occurred_at), 'YYYY-MM') as month,
-                    sum(case when type='income' then amount else 0 end)::float8 as income,
-                    sum(case when type='expense' then amount else 0 end)::float8 as expense
-             from transactions
-             where status='active' and deleted_at is null and transfer_id is null and occurred_at >= $1
-             group by 1 order by 1`,
-            [monthsBack]
-          )
-        : Promise.resolve({ rows: [] }),
-      query(
-        `select coalesce(c.name, 'Uncategorized') as category, coalesce(c.name_ar, c.name, 'بدون تصنيف') as category_ar,
-                coalesce(sum(i.quantity),0)::float8 as quantity,
-                coalesce(sum(i.quantity * i.cost_price),0)::float8 as value
-         from items i left join categories c on c.id = i.category_id
-         where i.deleted_at is null group by 1,2 having sum(i.quantity) > 0 order by value desc`
-      ),
-      canFinancials
-        ? query(`select c.id, c.name, cb.balance from customers c join customer_balances cb on cb.customer_id=c.id
-                 where c.deleted_at is null and cb.balance > 0.005 order by cb.balance desc limit 5`)
-        : Promise.resolve({ rows: [] }),
-      canFinancials
-        ? query(
-            `select to_char(date_trunc('month', paid_at), 'YYYY-MM') as month, sum(amount)::float8 as total
-             from payments where status='active' and deleted_at is null and paid_at >= $1
-             group by 1 order by 1`,
-            [monthsBack]
-          )
-        : Promise.resolve({ rows: [] }),
-    ]);
+    let recentPayments: any[] = [];
+    if (canFinancials) {
+      recentPayments = await Payment.aggregate([
+        { $match: { deleted_at: null } },
+        { $sort: { created_at: -1 } },
+        { $limit: 5 },
+        {
+          $lookup: { from: 'customers', localField: 'customer_id', foreignField: 'id', as: 'c', pipeline: [{ $project: { name: 1, _id: 0 } }] },
+        },
+        { $unwind: '$c' },
+        { $set: { customer_name: '$c.name' } },
+        { $project: { _id: 0, id: 1, customer_name: 1, amount: 1, paid_at: 1, method: 1, status: 1, receipt_number: 1 } },
+      ]);
+    }
 
-    const [recentAssignments, recentPayments, recentTransactions] = await Promise.all([
-      query(
-        `select a.id, c.name as customer_name, coalesce(i.name, a.item_text) as item_name,
-                coalesce(i.name_ar, i.name, a.item_text) as item_name_ar,
-                a.amount::float8 as amount, a.assigned_at, a.status
-         from assignments a join customers c on c.id=a.customer_id left join items i on i.id=a.item_id
-         where a.deleted_at is null order by a.created_at desc limit 5`
-      ),
-      canFinancials
-        ? query(
-            `select p.id, c.name as customer_name, p.amount::float8 as amount, p.paid_at, p.method, p.status, p.receipt_number
-             from payments p join customers c on c.id=p.customer_id
-             where p.deleted_at is null order by p.created_at desc limit 5`
-          )
-        : Promise.resolve({ rows: [] }),
-      canAccounting
-        ? query(
-            `select t.id, t.type, t.amount::float8 as amount, t.occurred_at,
-                    coalesce(tc.name_ar, tc.name) as category
-             from transactions t left join transaction_categories tc on tc.id=t.category_id
-             where t.deleted_at is null order by t.created_at desc limit 5`
-          )
-        : Promise.resolve({ rows: [] }),
-    ]);
+    let recentTransactions: any[] = [];
+    if (canAccounting) {
+      recentTransactions = await Transaction.aggregate([
+        { $match: { deleted_at: null } },
+        { $sort: { created_at: -1 } },
+        { $limit: 5 },
+        {
+          $lookup: { from: 'transactioncategories', localField: 'category_id', foreignField: 'id', as: 'tc', pipeline: [{ $project: { name: 1, name_ar: 1, _id: 0 } }] },
+        },
+        {
+          $set: { category: { $ifNull: [{ $arrayElemAt: ['$tc.name_ar', 0] }, { $arrayElemAt: ['$tc.name', 0] }] } },
+        },
+        { $project: { _id: 0, id: 1, type: 1, amount: 1, occurred_at: 1, category: 1 } },
+      ]);
+    }
 
-    const overdueCount = canFinancials
-      ? (
-          await query(
-            `select count(*) as c from installment_plans pl join installment_schedule s on s.plan_id=pl.id
-             where pl.status='active' and s.status<>'paid' and s.paid_amount < s.amount and s.due_date < current_date`
-          )
-        ).rows[0].c
-      : null;
+    let overdueCount: number | null = null;
+    if (canFinancials) {
+      const { InstallmentPlan } = await import('../db');
+      const set = await overdueCustomerSet();
+      const agg = await InstallmentPlan.aggregate([
+        { $match: { status: 'active' } },
+        {
+          $lookup: {
+            from: 'installmentschedules',
+            localField: 'id',
+            foreignField: 'plan_id',
+            as: 's',
+            pipeline: [
+              { $match: { status: { $ne: 'paid' }, $expr: { $and: [{ $lt: ['$paid_amount', '$amount'] }, { $lt: ['$due_date', todayStr()] }] } } },
+            ],
+          },
+        },
+        { $project: { n: { $size: '$s' } } },
+        { $group: { _id: null, n: { $sum: '$n' } } },
+      ]);
+      overdueCount = agg[0]?.n ?? 0;
+      void set;
+    }
 
     res.json({
       kpis: {
-        items_in_stock: stock.rows[0].total_quantity,
-        stock_cost_value: stock.rows[0].stock_cost_value,
-        stock_sell_value: stock.rows[0].stock_sell_value,
-        devices_out_count: Number(devicesOut.rows[0].count),
-        devices_out_quantity: devicesOut.rows[0].quantity,
-        devices_out_amount: devicesOut.rows[0].amount,
-        total_receivables: receivables.rows[0].total,
-        collected_in_range: collected.rows[0].total,
-        income_in_range: incomeExpense.rows[0].income,
-        expense_in_range: incomeExpense.rows[0].expense,
-        net_profit_in_range:
-          incomeExpense.rows[0].income != null ? incomeExpense.rows[0].income - incomeExpense.rows[0].expense : null,
-        overdue_installments: Number(overdueCount || 0),
+        items_in_stock: stockAgg[0]?.total_quantity ?? 0,
+        stock_cost_value: stockAgg[0]?.stock_cost_value ?? 0,
+        stock_sell_value: stockAgg[0]?.stock_sell_value ?? 0,
+        devices_out_count: devicesOutAgg[0]?.count ?? 0,
+        devices_out_quantity: devicesOutAgg[0]?.quantity ?? 0,
+        devices_out_amount: devicesOutAgg[0]?.amount ?? 0,
+        total_receivables: totalReceivables,
+        collected_in_range: paymentsRangeAgg[0]?.total ?? null,
+        income_in_range: canAccounting ? txRangeAgg[0]?.income ?? 0 : null,
+        expense_in_range: canAccounting ? txRangeAgg[0]?.expense ?? 0 : null,
+        net_profit_in_range: canAccounting ? (txRangeAgg[0] ? txRangeAgg[0].income - txRangeAgg[0].expense : null) : null,
+        overdue_installments: overdueCount ?? 0,
       },
-      low_stock: lowStock.rows,
+      low_stock: lowStock.map(strip),
       charts: {
-        income_vs_expense: incomeVsExpense.rows,
-        stock_by_category: stockByCategory.rows,
-        top_customers: topCustomers.rows,
-        monthly_collections: monthlyCollections.rows,
+        income_vs_expense: txMonthsAgg,
+        stock_by_category: stockByCategoryAgg,
+        top_customers: topCustomers,
+        monthly_collections: paymentsMonthsAgg,
       },
       recent: {
-        assignments: recentAssignments.rows,
-        payments: recentPayments.rows,
-        transactions: recentTransactions.rows,
+        assignments: recentAssignments,
+        payments: recentPayments,
+        transactions: recentTransactions,
       },
       range: { from, to },
     });

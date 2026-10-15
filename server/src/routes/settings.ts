@@ -1,17 +1,25 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { query } from '../db';
+import { Setting, strip } from '../db';
 import { asyncH, forbidden } from '../errors';
 import { audit } from '../audit';
 import { requireSuperAdmin } from '../middleware/auth';
 
 const router = Router();
 
+async function getSettingsRow(): Promise<any> {
+  let s: any = await Setting.findOne({ id: 1 }).lean();
+  if (!s) {
+    await Setting.updateOne({ id: 1 }, {}, { upsert: true });
+    s = await Setting.findOne({ id: 1 }).lean();
+  }
+  return strip(s);
+}
+
 router.get(
   '/',
   asyncH(async (_req: Request, res: Response) => {
-    const r = await query(`select * from settings where id = 1`);
-    const s = r.rows[0];
+    const s = await getSettingsRow();
     s.tax_rate = Number(s.tax_rate);
     res.json(s);
   })
@@ -35,22 +43,23 @@ router.put(
         notifications: z.record(z.boolean()).optional(),
       })
       .parse(req.body);
-    const old = (await query(`select * from settings where id=1`)).rows[0];
-    const r = await query(
-      `update settings set company_name=coalesce($2,company_name), company_name_en=$3, company_phone=$4,
-        company_address=$5, logo_url=coalesce($6,logo_url), currency=coalesce($7,currency),
-        tax_enabled=coalesce($8,tax_enabled), tax_rate=coalesce($9,tax_rate),
-        receipt_footer=$10, notifications=coalesce($11,notifications), updated_at=now()
-       where id=1 returning *`,
-      [1, body.company_name ?? null, body.company_name_en ?? old.company_name_en, body.company_phone ?? old.company_phone,
-       body.company_address ?? old.company_address, body.logo_url ?? null, body.currency ?? null,
-       body.tax_enabled ?? null, body.tax_rate ?? null, body.receipt_footer ?? null,
-       body.notifications ? JSON.stringify(body.notifications) : null]
-    );
-    await audit(req, { action: 'update', entity: 'settings', old_value: old, new_value: r.rows[0] });
-    const s = r.rows[0];
-    s.tax_rate = Number(s.tax_rate);
-    res.json(s);
+    const old = await getSettingsRow();
+    const update: any = { updated_at: new Date() };
+    if (body.company_name != null) update.company_name = body.company_name;
+    if (body.company_name_en !== undefined) update.company_name_en = body.company_name_en;
+    if (body.company_phone !== undefined) update.company_phone = body.company_phone;
+    if (body.company_address !== undefined) update.company_address = body.company_address;
+    if (body.logo_url != null) update.logo_url = body.logo_url;
+    if (body.currency != null) update.currency = body.currency;
+    if (body.tax_enabled != null) update.tax_enabled = body.tax_enabled;
+    if (body.tax_rate != null) update.tax_rate = body.tax_rate;
+    if (body.receipt_footer !== undefined) update.receipt_footer = body.receipt_footer;
+    if (body.notifications) update.notifications = body.notifications;
+    await Setting.updateOne({ id: 1 }, update);
+    const fresh = await getSettingsRow();
+    await audit(req, { action: 'update', entity: 'settings', old_value: old, new_value: fresh });
+    fresh.tax_rate = Number(fresh.tax_rate);
+    res.json(fresh);
   })
 );
 
@@ -59,14 +68,36 @@ router.get(
   '/backup',
   requireSuperAdmin,
   asyncH(async (_req: Request, res: Response) => {
-    const tables = [
-      'users', 'user_permissions', 'customers', 'categories', 'warehouses', 'items', 'item_units',
-      'stock_movements', 'assignments', 'payments', 'accounts', 'transaction_categories', 'transactions',
-      'transfers', 'closed_periods', 'daily_closes', 'installment_plans', 'installment_schedule', 'settings',
-    ];
+    const {
+      User, Customer, Category, Warehouse, Item, ItemUnit, StockMovement, Assignment, Payment,
+      Account, TransactionCategory, Transaction, Transfer, ClosedPeriod, DailyClose,
+      InstallmentPlan, InstallmentSchedule,
+    } = await import('../db');
+    const tables: Record<string, () => Promise<any[]>> = {
+      users: () => User.find().lean(),
+      user_permissions: async () =>
+        (await User.find({ role: 'staff' }).lean()).map((u: any) => ({ user_id: u.id, permissions: u.permissions ?? [] })),
+      customers: () => Customer.find().lean(),
+      categories: () => Category.find().lean(),
+      warehouses: () => Warehouse.find().lean(),
+      items: () => Item.find().lean(),
+      item_units: () => ItemUnit.find().lean(),
+      stock_movements: () => StockMovement.find().lean(),
+      assignments: () => Assignment.find().lean(),
+      payments: () => Payment.find().lean(),
+      accounts: () => Account.find().lean(),
+      transaction_categories: () => TransactionCategory.find().lean(),
+      transactions: () => Transaction.find().lean(),
+      transfers: () => Transfer.find().lean(),
+      closed_periods: () => ClosedPeriod.find().lean(),
+      daily_closes: () => DailyClose.find().lean(),
+      installment_plans: () => InstallmentPlan.find().lean(),
+      installment_schedule: () => InstallmentSchedule.find().lean(),
+      settings: () => Setting.find().lean(),
+    };
     const backup: Record<string, any[]> = {};
-    for (const t of tables) {
-      backup[t] = (await query(`select * from ${t}`)).rows;
+    for (const [t, fn] of Object.entries(tables)) {
+      backup[t] = (await fn()).map(strip);
     }
     await audit({ headers: {}, socket: { remoteAddress: 'self' }, user: { id: '', name: 'system' } } as any, {
       action: 'backup_export', entity: 'settings',
