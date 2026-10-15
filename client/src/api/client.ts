@@ -1,8 +1,9 @@
 import axios from 'axios';
 
-// Same Express server serves the API and the built client in production,
-// so a relative base works everywhere. Override with VITE_API_BASE if split.
-const API_BASE = import.meta.env.VITE_API_BASE || '/api';
+// Production points at the Render deployment (it serves both API and client);
+// works same-origin from Render and cross-origin from the pages.dev frontend.
+// Override with VITE_API_BASE to target a different backend.
+const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? 'https://demoblog-h71e.onrender.com/api' : '/api');
 
 export const api = axios.create({ baseURL: API_BASE });
 
