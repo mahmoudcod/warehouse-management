@@ -1,0 +1,13 @@
+node_modules
+server/node_modules
+client/node_modules
+server/dist
+client/dist
+dist
+server/uploads
+server/fly.toml
+server/Dockerfile
+.git
+.env
+.env.*
+*.tsbuildinfo

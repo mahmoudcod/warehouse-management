@@ -34,6 +34,9 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '2mb' }));
 
+// Public health check for platform probes (Render healthCheckPath)
+app.get('/api/health', (_req, res) => res.json({ ok: true }));
+
 // Auth router is public at its root; protected endpoints apply authenticate() themselves
 app.use('/api/auth', authRoutes);
 

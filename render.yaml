@@ -1,9 +1,9 @@
 services:
   - type: web
-    name: warehouse-management-server
+    name: warehouse-management
     env: docker
-    dockerfilePath: ./server/Dockerfile
-    dockerContext: ./server
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     plan: free
     region: oregon
     autoDeploy: true
@@ -14,6 +14,6 @@ services:
         value: "4000"
       - key: JWT_SECRET
         generateValue: true
-      - key: DATABASE_URL
+      - key: MONGO_URI
         sync: false
-    healthCheckPath: /api/auth/me
+    healthCheckPath: /api/health

@@ -1,6 +1,8 @@
 import axios from 'axios';
 
-const API_BASE = import.meta.env.PROD ? 'https://demoblog-h71e.onrender.com/api' : '/api';
+// Same Express server serves the API and the built client in production,
+// so a relative base works everywhere. Override with VITE_API_BASE if split.
+const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
 export const api = axios.create({ baseURL: API_BASE });
 
