@@ -398,8 +398,8 @@ const Setting = mongoose.model(
   'Setting',
   new Schema({
     id: { type: Number, required: true, unique: true }, // always 1
-    company_name: { type: String, default: 'مستودع النيل' },
-    company_name_en: { type: String, default: 'Nile Warehouse' },
+    company_name: { type: String, default: 'Moaz AIR' },
+    company_name_en: { type: String, default: 'Moaz AIR' },
     company_phone: { type: String, default: null },
     company_address: { type: String, default: null },
     logo_url: { type: String, default: null },

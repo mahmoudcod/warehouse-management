@@ -65,8 +65,8 @@ async function seed() {
     await Setting.updateOne(
       { id: 1 },
       {
-        company_name: 'مستودع النيل للتقنية',
-        company_name_en: 'Nile Tech Warehouse',
+        company_name: 'Moaz AIR',
+        company_name_en: 'Moaz AIR',
         company_phone: '01000000000',
         company_address: 'القاهرة، مصر',
         receipt_footer: 'شكراً لتعاملكم معنا — Thank you for your business',
@@ -86,8 +86,8 @@ async function seed() {
     );
 
     const catNames: [string, string][] = [
-      ['Screens', 'شاشات'], ['Routers', 'راوترات'], ['Tablets', 'أجهزة لوحية'],
-      ['Accessories', 'ملحقات'], ['Cameras', 'كاميرات'], ['Networking', 'أجهزة شبكات'],
+      ['Split AC', 'سبليت'], ['Window AC', 'شباك'], ['Cassette AC', 'كاسيت'],
+      ['Ducted AC', 'دكت مخفي'], ['Portable AC', 'متنقل'], ['Spares', 'قطع غيار ومستلزمات'],
     ];
     const cats: Record<string, number> = {};
     for (const [en, ar] of catNames) {
@@ -145,27 +145,27 @@ async function seed() {
     console.log('✔ 10 customers');
 
     // ---------- Items (20) ----------
-    const items: { name: string; name_ar: string; cat: string; brand: string; cost: number; price: number; qty: number; min: number; wh: number }[] = [
-      { name: 'Dell 24" Monitor P2422H', name_ar: 'شاشة ديل 24 بوصة P2422H', cat: 'Screens', brand: 'Dell', cost: 3800, price: 4950, qty: 14, min: 3, wh: mainWh.id },
-      { name: 'LG 27" Monitor 27UP550', name_ar: 'شاشة LG 27 بوصة 27UP550', cat: 'Screens', brand: 'LG', cost: 5200, price: 6800, qty: 8, min: 2, wh: mainWh.id },
-      { name: 'Samsung 32" Curved C32R500', name_ar: 'شاشة سامسونج منحنية 32 بوصة', cat: 'Screens', brand: 'Samsung', cost: 6400, price: 8300, qty: 5, min: 2, wh: branchWh.id },
-      { name: 'TP-Link Archer AX23 Router', name_ar: 'راوتر TP-Link AX23', cat: 'Routers', brand: 'TP-Link', cost: 1450, price: 2100, qty: 25, min: 5, wh: mainWh.id },
-      { name: 'Huawei H122-373 Router', name_ar: 'راوتر هواوي H122-373', cat: 'Routers', brand: 'Huawei', cost: 1900, price: 2700, qty: 18, min: 5, wh: mainWh.id },
-      { name: 'Mikrotik hAP ax2', name_ar: 'ميكروتيك hAP ax2', cat: 'Routers', brand: 'Mikrotik', cost: 3200, price: 4200, qty: 2, min: 4, wh: branchWh.id },
-      { name: 'Samsung Galaxy Tab A9+', name_ar: 'تابلت سامسونج جالاكسي A9+', cat: 'Tablets', brand: 'Samsung', cost: 8900, price: 11200, qty: 7, min: 2, wh: mainWh.id },
-      { name: 'Lenovo Tab M11', name_ar: 'تابلت لينوفو M11', cat: 'Tablets', brand: 'Lenovo', cost: 6700, price: 8600, qty: 4, min: 2, wh: mainWh.id },
-      { name: 'iPad 10th Gen 64GB', name_ar: 'آيباد الجيل العاشر 64GB', cat: 'Tablets', brand: 'Apple', cost: 17500, price: 21000, qty: 3, min: 1, wh: mainWh.id },
-      { name: 'Logitech MK270 Keyboard+Mouse', name_ar: 'طقم لوحة مفاتيح وماوس لوجيتك', cat: 'Accessories', brand: 'Logitech', cost: 850, price: 1250, qty: 30, min: 8, wh: mainWh.id },
-      { name: 'Anker 65W GaN Charger', name_ar: 'شاحن أنكر 65 واط', cat: 'Accessories', brand: 'Anker', cost: 950, price: 1450, qty: 22, min: 6, wh: mainWh.id },
-      { name: 'APC Back-UPS 700VA', name_ar: 'UPS إيه بي سي 700 فولت', cat: 'Accessories', brand: 'APC', cost: 2400, price: 3100, qty: 9, min: 3, wh: branchWh.id },
-      { name: 'Cat6 Cable 305m Box', name_ar: 'كابل شبكات Cat6 بكرة 305 متر', cat: 'Networking', brand: 'Generic', cost: 3600, price: 4700, qty: 12, min: 4, wh: mainWh.id },
-      { name: 'TP-Link 8-Port Gigabit Switch', name_ar: 'سويتش 8 منافذ TP-Link', cat: 'Networking', brand: 'TP-Link', cost: 1050, price: 1550, qty: 16, min: 4, wh: mainWh.id },
-      { name: 'Netgear GS324 24-Port Switch', name_ar: 'سويتش 24 منفذ نيت جير', cat: 'Networking', brand: 'Netgear', cost: 6800, price: 8900, qty: 1, min: 2, wh: branchWh.id },
-      { name: 'Hikvision 4MP Dome Camera', name_ar: 'كاميرا هيك فيجن 4 ميجا', cat: 'Cameras', brand: 'Hikvision', cost: 1250, price: 1900, qty: 20, min: 6, wh: mainWh.id },
-      { name: 'Dahua 5MP Bullet Camera', name_ar: 'كاميرا داهوا 5 ميجا', cat: 'Cameras', brand: 'Dahua', cost: 1400, price: 2100, qty: 11, min: 4, wh: branchWh.id },
-      { name: 'Hikvision NVR 8CH', name_ar: 'مسجل شبكة هيك فيجن 8 قنوات', cat: 'Cameras', brand: 'Hikvision', cost: 4200, price: 5600, qty: 6, min: 2, wh: mainWh.id },
-      { name: 'Ubiquiti UniFi 6 Lite AP', name_ar: 'نقطة وصول Ubiquiti U6 Lite', cat: 'Networking', brand: 'Ubiquiti', cost: 3900, price: 5100, qty: 4, min: 2, wh: mainWh.id },
-      { name: 'JBL Flip 6 Speaker', name_ar: 'سماعة JBL Flip 6', cat: 'Accessories', brand: 'JBL', cost: 3200, price: 4300, qty: 0, min: 3, wh: mainWh.id },
+    const items: { name: string; name_ar: string; model: string; cat: string; brand: string; cost: number; price: number; qty: number; min: number; wh: number }[] = [
+      { name: 'Carrier Split 1.5HP Inverter', name_ar: 'كاريير سبليت 1.5 حصان إنفرتر', model: 'Optima', cat: 'Split AC', brand: 'Carrier', cost: 34000, price: 41500, qty: 12, min: 3, wh: mainWh.id },
+      { name: 'LG Split 1.5HP Inverter', name_ar: 'LG سبليت 1.5 حصان إنفرتر', model: 'DualCool', cat: 'Split AC', brand: 'LG', cost: 39000, price: 47000, qty: 8, min: 2, wh: mainWh.id },
+      { name: 'Samsung Split 2HP WindFree', name_ar: 'سامسونج سبليت 2 حصان ويند فري', model: 'WindFree', cat: 'Split AC', brand: 'Samsung', cost: 52000, price: 63000, qty: 5, min: 2, wh: branchWh.id },
+      { name: 'Gree Split 1HP Inverter', name_ar: 'جري سبليت 1 حصان إنفرتر', model: 'Bora', cat: 'Split AC', brand: 'Gree', cost: 26000, price: 32000, qty: 15, min: 4, wh: mainWh.id },
+      { name: 'Unionaire Split 2.25HP', name_ar: 'يونيون إير سبليت 2.25 حصان', model: 'Infinity', cat: 'Split AC', brand: 'Unionaire', cost: 48000, price: 58000, qty: 6, min: 2, wh: mainWh.id },
+      { name: 'Fresh Split 1.5HP', name_ar: 'فريش سبليت 1.5 حصان', model: 'Dynamic', cat: 'Split AC', brand: 'Fresh', cost: 31000, price: 38000, qty: 9, min: 3, wh: branchWh.id },
+      { name: 'Daikin Split 2HP Inverter', name_ar: 'دايكن سبليت 2 حصان إنفرتر', model: 'FTKM', cat: 'Split AC', brand: 'Daikin', cost: 58000, price: 69000, qty: 3, min: 1, wh: mainWh.id },
+      { name: 'Mitsubishi Split 1.5HP', name_ar: 'ميتسوبيشي سبليت 1.5 حصان', model: 'MSY-GS', cat: 'Split AC', brand: 'Mitsubishi', cost: 45000, price: 54000, qty: 2, min: 3, wh: branchWh.id },
+      { name: 'TCL Split 1HP', name_ar: 'TCL سبليت 1 حصان', model: 'T-Pro', cat: 'Split AC', brand: 'TCL', cost: 23000, price: 28500, qty: 18, min: 5, wh: mainWh.id },
+      { name: 'Haier Split 1.5HP Inverter', name_ar: 'هاير سبليت 1.5 حصان إنفرتر', model: 'Flexis', cat: 'Split AC', brand: 'Haier', cost: 33000, price: 40000, qty: 7, min: 2, wh: mainWh.id },
+      { name: 'Carrier Window 1.5HP', name_ar: 'كاريير شباك 1.5 حصان', model: 'Window', cat: 'Window AC', brand: 'Carrier', cost: 19000, price: 24000, qty: 10, min: 3, wh: mainWh.id },
+      { name: 'Fresh Window 1HP', name_ar: 'فريش شباك 1 حصان', model: 'Window', cat: 'Window AC', brand: 'Fresh', cost: 15500, price: 19500, qty: 14, min: 4, wh: branchWh.id },
+      { name: 'Gree Cassette 2HP', name_ar: 'جري كاسيت 2 حصان', model: 'U-Match', cat: 'Cassette AC', brand: 'Gree', cost: 56000, price: 68000, qty: 4, min: 1, wh: mainWh.id },
+      { name: 'Midea Cassette 3HP', name_ar: 'ميدا كاسيت 3 حصان', model: 'MCA3', cat: 'Cassette AC', brand: 'Midea', cost: 72000, price: 86000, qty: 2, min: 1, wh: branchWh.id },
+      { name: 'Carrier Ducted 4HP', name_ar: 'كاريير دكت مخفي 4 حصان', model: 'Duct', cat: 'Ducted AC', brand: 'Carrier', cost: 98000, price: 118000, qty: 2, min: 1, wh: mainWh.id },
+      { name: 'Midea Portable 1HP', name_ar: 'ميدا تكييف متنقل 1 حصان', model: 'Portable', cat: 'Portable AC', brand: 'Midea', cost: 21000, price: 26500, qty: 6, min: 2, wh: mainWh.id },
+      { name: 'Copper Pipe Kit 5m', name_ar: 'طقم مواسير نحاس للتكييف 5 متر', model: '5m', cat: 'Spares', brand: 'Generic', cost: 1200, price: 1800, qty: 30, min: 8, wh: mainWh.id },
+      { name: 'AC Wall Bracket Heavy Duty', name_ar: 'حامل تكييف حديدي مقوى', model: 'HD', cat: 'Spares', brand: 'Generic', cost: 450, price: 750, qty: 40, min: 10, wh: mainWh.id },
+      { name: 'AC Drain Hose + Cover Set', name_ar: 'خرطوم صرف + غطاء تكييف', model: 'Set', cat: 'Spares', brand: 'Generic', cost: 300, price: 550, qty: 25, min: 6, wh: branchWh.id },
+      { name: 'AC Voltage Stabilizer 2000W', name_ar: 'مثبت جهد للتكييف 2000 واط', model: '2000W', cat: 'Spares', brand: 'Generic', cost: 1400, price: 2000, qty: 0, min: 4, wh: mainWh.id },
     ];
     const itemIds: number[] = [];
     for (let i = 0; i < items.length; i++) {
@@ -176,7 +176,7 @@ async function seed() {
         {
           name: it.name, name_ar: it.name_ar, sku: `SKU-${1001 + i}`,
           barcode: `62${(2000000 + i * 7331).toString()}`, category_id: cats[it.cat], brand: it.brand,
-          model: it.name.split(' ').slice(-1)[0], cost_price: it.cost, selling_price: it.price,
+          model: it.model, cost_price: it.cost, selling_price: it.price,
           quantity: it.qty, min_stock_level: it.min, warehouse_id: it.wh,
         },
         session
@@ -197,18 +197,18 @@ async function seed() {
     // ---------- Assignments + payments + stock-out movements ----------
     // [customerIdx, itemIdx, qty, daysAgoAssigned, paidAmountOrNull]
     const flows: [number, number, number, number, number | null][] = [
-      [0, 0, 1, 55, 4950],       // fully paid
-      [0, 3, 2, 40, 2100],       // partial
-      [1, 6, 1, 38, 5600],       // partial
-      [2, 15, 4, 33, 3800],      // partial
-      [3, 9, 2, 25, 2500],       // full
-      [4, 13, 1, 21, 0],         // unpaid
-      [5, 16, 2, 18, 2100],      // partial
-      [6, 1, 1, 14, 6800],       // full
-      [7, 17, 1, 11, 2800],      // partial
-      [8, 4, 2, 8, 0],           // unpaid
-      [9, 7, 1, 5, 8600],        // full
-      [1, 18, 1, 3, 0],          // unpaid, recent
+      [0, 0, 1, 55, 41500],      // fully paid — Carrier 1.5HP
+      [0, 3, 2, 40, 21000],      // partial — 2× Gree 1HP (64000)
+      [1, 6, 1, 38, 25000],      // partial — Daikin 2HP (69000)
+      [2, 15, 4, 33, 40000],     // partial — 4× portable (106000)
+      [3, 9, 2, 25, 80000],      // full — 2× Haier 1.5HP
+      [4, 13, 1, 21, 0],         // unpaid — Midea cassette 3HP
+      [5, 16, 2, 18, 2100],      // partial — 2× copper kits (3600)
+      [6, 1, 1, 14, 47000],      // full — LG 1.5HP
+      [7, 18, 1, 11, 300],       // partial — drain+cover set (550)
+      [8, 4, 2, 8, 0],           // unpaid — 2× Unionaire 2.25HP
+      [9, 7, 1, 5, 54000],       // full — Mitsubishi 1.5HP
+      [1, 10, 1, 3, 0],          // unpaid, recent — Carrier window
     ];
     for (const [ci, ii, qty, ago, paid] of flows) {
       const it = items[ii];
@@ -258,7 +258,7 @@ async function seed() {
     }
 
     // A returned assignment (returned item → stock restored, credited)
-    const retAmount = 1 * items[3].price; // router 2100
+    const retAmount = 1 * items[3].price; // Gree 1HP
     const retAssigned = iso(daysAgo(60));
     const retAssignment: any = await createWithId(
       Assignment,
@@ -341,8 +341,8 @@ async function seed() {
     const plan1: any = await createWithId(
       InstallmentPlan,
       {
-        customer_id: custIds[4], total_amount: 8400, installments_count: 4,
-        start_date: iso(daysAgo(95)), interval_days: 30, notes: 'تقسيط راوترين', created_by: admin.id,
+        customer_id: custIds[4], total_amount: 32000, installments_count: 4,
+        start_date: iso(daysAgo(95)), interval_days: 30, notes: 'تقسيط تكييف سبليت', created_by: admin.id,
       },
       session
     );
@@ -350,15 +350,15 @@ async function seed() {
       const due = daysAgo(95 - (i - 1) * 30);
       await createWithId(
         InstallmentSchedule,
-        { plan_id: plan1.id, installment_no: i, due_date: iso(due), amount: 2100, paid_amount: i === 1 ? 2100 : 0, status: i === 1 ? 'paid' : 'pending' },
+        { plan_id: plan1.id, installment_no: i, due_date: iso(due), amount: 8000, paid_amount: i === 1 ? 8000 : 0, status: i === 1 ? 'paid' : 'pending' },
         session
       );
     }
     const plan2: any = await createWithId(
       InstallmentPlan,
       {
-        customer_id: custIds[2], total_amount: 16800, installments_count: 6,
-        start_date: iso(daysAgo(10)), interval_days: 30, notes: 'تقسيط تابلت', created_by: admin.id,
+        customer_id: custIds[2], total_amount: 27000, installments_count: 6,
+        start_date: iso(daysAgo(10)), interval_days: 30, notes: 'تقسيط تكييف شباك', created_by: admin.id,
       },
       session
     );
@@ -366,7 +366,7 @@ async function seed() {
       const due = daysAgo(10 - (i - 1) * 30);
       await createWithId(
         InstallmentSchedule,
-        { plan_id: plan2.id, installment_no: i, due_date: iso(due), amount: 2800 },
+        { plan_id: plan2.id, installment_no: i, due_date: iso(due), amount: 4500 },
         session
       );
     }

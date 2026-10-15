@@ -72,7 +72,7 @@ export default function LoginPage() {
                 : 'Complete control of inventory, customers, devices taken, collections and accounting — in one place.'}
             </p>
           </div>
-          <div className="text-xs text-primary-200">© 2026 Nile Tech Warehouse</div>
+          <div className="text-xs text-primary-200">© 2026 Moaz AIR</div>
         </div>
 
         {/* Form side */}
