@@ -52,8 +52,10 @@ export async function createWithId(Model: any, data: any, session?: mongoose.Cli
   return arr[0];
 }
 
-/** Run fn inside an Atlas replica-set transaction. */
+/** Run fn inside an Atlas replica-set transaction (skipped when MONGO_NO_TX=1,
+ *  e.g. one-time seeding on small free-tier clusters where long transactions abort). */
 export async function withTransaction<T>(fn: (session: mongoose.ClientSession) => Promise<T>): Promise<T> {
+  if (process.env.MONGO_NO_TX === '1') return (fn as any)(undefined);
   const session = await mongoose.startSession();
   try {
     let result!: T;
