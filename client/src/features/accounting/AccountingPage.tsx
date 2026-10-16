@@ -4,7 +4,7 @@ import { Plus, Pencil, Ban, ArrowLeftRight, Lock, Unlock, Vault, Paperclip } fro
 import { api, errMsg, exportCsv } from '../../api/client';
 import { useApp } from '../../context/AppContext';
 import { Badge, Button, Card, ConfirmDialog, DataTable, Field, Input, Modal, PageHeader, Pagination, Select, Tabs, Textarea, Column } from '../../components/ui/kit';
-import { money, fmtDate, today, monthStart } from '../../lib/format';
+import { money, fmtDate, today, monthStart, num } from '../../lib/format';
 
 const emptyTx = { type: 'expense', amount: '', category_id: '', occurred_at: today(), method: 'cash', account_id: '', reference: '', notes: '' };
 
@@ -354,9 +354,64 @@ export default function AccountingPage() {
         )}
 
         {tab === 'periods' && (
-          <Card className="p-5 text-sm text-slate-500 dark:text-slate-400">
-            {t('locked_hint')}
-          </Card>
+          <>
+            <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-xs leading-relaxed text-amber-700 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300">
+              <b>{t('locked_periods')}:</b> {locale === 'ar'
+                ? 'الشهر المقفل مجمد — لا يمكن إضافة أو تعديل قيود (مدفوعات، مصروفات، قيود يومية) فيه إلا بعد فتحه، أو بواسطة مدير النظام. القفل بيحمي الحسابات الشهرية من التعديل بعد إقفالها.'
+                : 'A locked month is frozen — entries (payments, expenses, journal entries) inside it cannot be added or changed until it is unlocked, except by a Super Admin. Locking protects monthly totals after closing.'}
+            </div>
+            {periods.length ? (
+              <Card>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs md:text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-[11px] text-slate-400 dark:border-slate-700">
+                        <th className="p-3 text-start">{t('month')}</th>
+                        <th className="p-3 text-start">{locale === 'ar' ? 'الأجهزة المأخوذة' : 'Devices taken'}</th>
+                        <th className="p-3 text-start">{locale === 'ar' ? 'التحصيلات' : 'Collected'}</th>
+                        <th className="p-3 text-end">{t('income')}</th>
+                        <th className="p-3 text-end">{t('expense')}</th>
+                        <th className="p-3 text-end">{locale === 'ar' ? 'الصافي' : 'Net'}</th>
+                        <th className="p-3 text-end">{t('entries')}</th>
+                        <th className="p-3 text-end">{locale === 'ar' ? 'أُقفل بواسطة' : 'Locked by'}</th>
+                        {isAdmin && <th className="p-3 text-end">{t('actions')}</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {periods.map((p) => (
+                        <tr key={p.id} className="border-b border-slate-50 last:border-0 dark:border-slate-800">
+                          <td className="p-3 font-bold text-slate-700 dark:text-slate-200"><span dir="ltr">{String(p.period).slice(0, 7)}</span></td>
+                          <td className="p-3 text-slate-500 dark:text-slate-400"><span dir="ltr">{money(p.taken_total)}</span> <span className="text-[10px] text-slate-400">({num(p.assignments_count)})</span></td>
+                          <td className="p-3 font-bold text-emerald-600 dark:text-emerald-400"><span dir="ltr">{money(p.collected)}</span> <span className="text-[10px] text-slate-400">({num(p.payments_count)})</span></td>
+                          <td className="p-3 text-end text-emerald-600 dark:text-emerald-400"><span dir="ltr">{money(p.income)}</span></td>
+                          <td className="p-3 text-end text-rose-600 dark:text-rose-400"><span dir="ltr">{money(p.expense)}</span></td>
+                          <td className={`p-3 text-end font-extrabold ${Number(p.net) >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}><span dir="ltr">{money(p.net)}</span></td>
+                          <td className="p-3 text-end text-slate-400"><span dir="ltr">{num(p.entries_count)}</span></td>
+                          <td className="p-3 text-end text-xs text-slate-400">{p.closed_by_name || '—'}</td>
+                          {isAdmin && (
+                            <td className="p-3 text-end">
+                              <button
+                                className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2 py-1 text-[11px] font-bold text-rose-600 hover:bg-rose-50 dark:border-rose-900 dark:hover:bg-rose-900/30"
+                                onClick={async () => {
+                                  try { await api.delete(`/accounting/periods/${String(p.period).slice(0, 7)}`); toast(t('saved_ok')); loadAux(); } catch (e) { toast(errMsg(e), 'err'); }
+                                }}
+                              >
+                                <Unlock size={11} /> {locale === 'ar' ? 'فتح' : 'Unlock'}
+                              </button>
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            ) : (
+              <Card className="p-8 text-center text-sm text-slate-400">
+                {locale === 'ar' ? 'لا توجد أشهر مقفلة — كل الفترات مفتوحة للتعديل' : 'No locked months — all periods are open for editing'}
+              </Card>
+            )}
+          </>
         )}
       </div>
 

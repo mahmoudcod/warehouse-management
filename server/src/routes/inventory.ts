@@ -75,12 +75,33 @@ warehouses.get(
   '/',
   asyncH(async (_req: Request, res: Response) => {
     const docs = (await Warehouse.find({ deleted_at: null }).sort({ is_default: -1, name: 1 }).lean()).map(strip);
-    const qtys = await Item.aggregate([
+    const stats = await Item.aggregate([
       { $match: { deleted_at: null } },
-      { $group: { _id: '$warehouse_id', q: { $sum: '$quantity' } } },
+      {
+        $group: {
+          _id: '$warehouse_id',
+          items_count: { $sum: 1 },
+          total_quantity: { $sum: '$quantity' },
+          cost_value: { $sum: { $multiply: ['$cost_price', '$quantity'] } },
+          sell_value: { $sum: { $multiply: ['$selling_price', '$quantity'] } },
+          out_count: { $sum: { $cond: [{ $lte: ['$quantity', 0] }, 1, 0] } },
+          low_count: { $sum: { $cond: [{ $and: [{ $gt: ['$quantity', 0] }, { $lte: ['$quantity', '$min_stock_level'] }] }, 1, 0] } },
+        },
+      },
     ]);
-    const qById = new Map(qtys.map((q: any) => [q._id, q.q]));
-    res.json(docs.map((w: any) => ({ ...w, total_quantity: qById.get(w.id) ?? 0 })));
+    const byId = new Map(stats.map((s: any) => [s._id, s]));
+    res.json(docs.map((w: any) => {
+      const s: any = byId.get(w.id);
+      return {
+        ...w,
+        items_count: s?.items_count ?? 0,
+        total_quantity: s?.total_quantity ?? 0,
+        cost_value: Math.round((s?.cost_value ?? 0) * 100) / 100,
+        sell_value: Math.round((s?.sell_value ?? 0) * 100) / 100,
+        out_count: s?.out_count ?? 0,
+        low_count: s?.low_count ?? 0,
+      };
+    }));
   })
 );
 

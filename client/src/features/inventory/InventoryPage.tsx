@@ -480,19 +480,44 @@ function WarehousesTab({ whs, reload }: { whs: any[]; reload: () => void }) {
       )}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {whs.map((w) => (
-          <div key={w.id} className="flex items-center justify-between gap-2 rounded-2xl border border-slate-200 p-3.5 dark:border-slate-700">
-            <div>
-              <div className="font-bold text-slate-800 dark:text-slate-100">
-                {locale === 'ar' ? w.name_ar || w.name : w.name}
-                {w.is_default && <Badge color="blue">{locale === 'ar' ? 'افتراضي' : 'default'}</Badge>}
+          <div key={w.id} className="rounded-2xl border border-slate-200 p-4 dark:border-slate-700">
+            <div className="mb-3 flex items-start justify-between gap-2">
+              <div>
+                <div className="font-bold text-slate-800 dark:text-slate-100">
+                  {locale === 'ar' ? w.name_ar || w.name : w.name}
+                  {w.is_default && <Badge color="blue">{locale === 'ar' ? 'افتراضي' : 'default'}</Badge>}
+                </div>
+                <div className="text-xs text-slate-400">{w.location || '—'}</div>
               </div>
-              <div className="text-xs text-slate-400">{w.location || '—'} · {num(w.total_quantity)} {locale === 'ar' ? 'وحدة' : 'units'}</div>
+              {can('inventory.delete') && !w.is_default && Number(w.total_quantity) === 0 && (
+                <button className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-900/30" onClick={() => setDelTarget(w)}>
+                  <Trash2 size={14} />
+                </button>
+              )}
             </div>
-            {can('inventory.delete') && !w.is_default && Number(w.total_quantity) === 0 && (
-              <button className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-900/30" onClick={() => setDelTarget(w)}>
-                <Trash2 size={14} />
-              </button>
-            )}
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded-xl bg-slate-50 p-2.5 dark:bg-slate-800/60">
+                <div className="font-bold text-slate-400">{t('items')}</div>
+                <div className="mt-0.5 text-base font-extrabold text-slate-800 dark:text-slate-100"><span dir="ltr">{num(w.items_count)}</span></div>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-2.5 dark:bg-slate-800/60">
+                <div className="font-bold text-slate-400">{locale === 'ar' ? 'إجمالي الكميات' : 'Total units'}</div>
+                <div className="mt-0.5 text-base font-extrabold text-slate-800 dark:text-slate-100"><span dir="ltr">{num(w.total_quantity)}</span></div>
+              </div>
+              <div className="rounded-xl bg-sky-50 p-2.5 dark:bg-sky-900/20">
+                <div className="font-bold text-sky-500/80">{locale === 'ar' ? 'قيمة التكلفة' : 'Cost value'}</div>
+                <div className="mt-0.5 font-extrabold text-sky-700 dark:text-sky-300"><span dir="ltr">{money(w.cost_value)}</span></div>
+              </div>
+              <div className="rounded-xl bg-violet-50 p-2.5 dark:bg-violet-900/20">
+                <div className="font-bold text-violet-500/80">{locale === 'ar' ? 'قيمة البيع' : 'Sell value'}</div>
+                <div className="mt-0.5 font-extrabold text-violet-700 dark:text-violet-300"><span dir="ltr">{money(w.sell_value)}</span></div>
+              </div>
+            </div>
+            <div className="mt-2.5 flex flex-wrap gap-1.5">
+              {Number(w.out_count) > 0 && <Badge color="red">{locale === 'ar' ? `${num(w.out_count)} صنف نفد` : `${num(w.out_count)} out of stock`}</Badge>}
+              {Number(w.low_count) > 0 && <Badge color="amber">{locale === 'ar' ? `${num(w.low_count)} صنف منخفض` : `${num(w.low_count)} low`}</Badge>}
+              {Number(w.out_count) === 0 && Number(w.low_count) === 0 && <Badge color="green">{locale === 'ar' ? 'المخزون سليم' : 'Stock healthy'}</Badge>}
+            </div>
           </div>
         ))}
       </div>

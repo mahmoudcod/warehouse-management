@@ -53,6 +53,16 @@ export default function AssignmentsPage() {
     { key: 'item', label: t('item'), render: (a) => (locale === 'ar' ? a.item_name_ar || a.item_name || a.item_text : a.item_name || a.item_text) },
     { key: 'quantity', label: t('quantity'), hideOnMobile: true, render: (a) => num(a.quantity) },
     { key: 'amount', label: t('amount'), render: (a) => <span dir="ltr" className="font-extrabold">{money(a.amount)}</span> },
+    {
+      key: 'initial_paid',
+      label: t('paid_at_record'),
+      hideOnMobile: true,
+      render: (a) => Number(a.initial_paid) > 0 ? (
+        <span dir="ltr" className={`font-bold ${Number(a.initial_paid) >= Number(a.amount) ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+          {money(a.initial_paid)}
+        </span>
+      ) : <span className="text-xs text-slate-300 dark:text-slate-600">—</span>,
+    },
     { key: 'created_by_name', label: t('created_by'), hideOnMobile: true, render: (a) => a.created_by_name || '—' },
     { key: 'status', label: t('status'), render: (a) => <Badge color={a.status === 'taken' ? 'blue' : a.status === 'returned' ? 'green' : 'slate'}>{t(a.status)}</Badge> },
     ...(can('assignments.edit') || can('assignments.approve') || can('assignments.delete')

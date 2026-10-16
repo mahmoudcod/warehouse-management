@@ -364,12 +364,12 @@ export default function CustomerProfilePage() {
         {tab === 'overview' && (
           <>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <Card className="p-4"><div className="text-[11px] font-bold text-slate-400">{t('total_taken')}</div><div className="text-lg font-extrabold text-slate-800 dark:text-slate-100" dir="ltr">{money(customer.total_taken)}</div></Card>
-              <Card className="p-4"><div className="text-[11px] font-bold text-slate-400">{t('total_paid')}</div><div className="text-lg font-extrabold text-emerald-600 dark:text-emerald-400" dir="ltr">{money(customer.total_paid)}</div></Card>
-              <Card className="p-4"><div className="text-[11px] font-bold text-slate-400">{t('remaining')}</div><div className={`text-lg font-extrabold ${bal > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`} dir="ltr">{money(bal)}</div></Card>
+              <Card className="p-4"><div className="text-[11px] font-bold text-slate-400">{t('total_taken')}</div><div className="text-lg font-extrabold text-slate-800 dark:text-slate-100"><span dir="ltr">{money(customer.total_taken)}</span></div></Card>
+              <Card className="p-4"><div className="text-[11px] font-bold text-slate-400">{t('total_paid')}</div><div className="text-lg font-extrabold text-emerald-600 dark:text-emerald-400"><span dir="ltr">{money(customer.total_paid)}</span></div></Card>
+              <Card className="p-4"><div className="text-[11px] font-bold text-slate-400">{t('remaining')}</div><div className={`text-lg font-extrabold ${bal > 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}><span dir="ltr">{money(bal)}</span></div></Card>
               <Card className="p-4">
                 <div className="mb-1 text-[11px] font-bold text-slate-400">{t('status')}</div>
-                {customer.overdue ? <Badge color="red">{t('overdue_status')}</Badge> : bal > 0.005 ? <Badge color="amber">{t('owes_status')}</Badge> : <Badge color="green">{t('clear_status')}</Badge>}
+                <div className="mt-1">{customer.overdue ? <Badge color="red">{t('overdue_status')}</Badge> : bal > 0.005 ? <Badge color="amber">{t('owes_status')}</Badge> : <Badge color="green">{t('clear_status')}</Badge>}</div>
               </Card>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
@@ -486,9 +486,9 @@ function MiniStatement({ customerId }: { customerId: string }) {
             <tr key={i} className="border-b border-slate-50 last:border-0 dark:border-slate-800">
               <td className="p-2 text-slate-400 whitespace-nowrap">{fmtDate(e.date)}</td>
               <td className="p-2">{e.label || e.notes || (e.kind === 'debit' ? t('nav_assignments') : t('payment'))}</td>
-              <td className="p-2 text-end font-bold" dir="ltr">{e.kind === 'debit' ? money(e.amount) : ''}</td>
-              <td className="p-2 text-end font-bold text-emerald-600 dark:text-emerald-400" dir="ltr">{e.kind === 'credit' ? money(e.amount) : ''}</td>
-              <td className="p-2 text-end" dir="ltr">{money(e.running_balance)}</td>
+              <td className="p-2 text-end font-bold"><span dir="ltr">{e.kind === 'debit' ? money(e.amount) : ''}</span></td>
+              <td className="p-2 text-end font-bold text-emerald-600 dark:text-emerald-400"><span dir="ltr">{e.kind === 'credit' ? money(e.amount) : ''}</span></td>
+              <td className="p-2 text-end"><span dir="ltr">{money(e.running_balance)}</span></td>
             </tr>
           ))}
         </tbody>

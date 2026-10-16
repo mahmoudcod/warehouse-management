@@ -19,14 +19,14 @@ export function CustomerSelect({ value, onChange }: { value: string; onChange: (
   }, [q]);
 
   useEffect(() => {
-    if (value && !rows.some((r) => r.id === value)) {
+    if (value && !rows.some((r) => String(r.id) === String(value))) {
       api.get(`/customers/${value}`).then((r) => {
-        if (r.data) setRows((prev) => (prev.some((x) => x.id === r.data.id) ? prev : [r.data, ...prev]));
+        if (r.data) setRows((prev) => (prev.some((x) => String(x.id) === String(r.data.id)) ? prev : [r.data, ...prev]));
       }).catch(() => {});
     }
   }, [value, rows]);
 
-  const selected = rows.find((r) => r.id === value);
+  const selected = rows.find((r) => String(r.id) === String(value));
 
   return (
     <div className="relative">
@@ -51,7 +51,7 @@ export function CustomerSelect({ value, onChange }: { value: string; onChange: (
               key={r.id}
               className="flex w-full items-center justify-between gap-2 px-3.5 py-2.5 text-start text-sm hover:bg-slate-50 dark:hover:bg-slate-800"
               onMouseDown={() => {
-                onChange(r.id);
+                onChange(String(r.id));
                 setOpen(false);
               }}
             >
@@ -84,7 +84,7 @@ export function ItemSelect({ value, onChange }: { value: string; onChange: (id: 
     return () => clearTimeout(id);
   }, [q]);
 
-  const selected = rows.find((r) => r.id === value);
+  const selected = rows.find((r) => String(r.id) === String(value));
 
   return (
     <div className="relative">
@@ -109,7 +109,7 @@ export function ItemSelect({ value, onChange }: { value: string; onChange: (id: 
               key={r.id}
               className="flex w-full items-center justify-between gap-2 px-3.5 py-2.5 text-start text-sm hover:bg-slate-50 dark:hover:bg-slate-800"
               onMouseDown={() => {
-                onChange(r.id);
+                onChange(String(r.id));
                 setOpen(false);
               }}
             >
@@ -127,9 +127,10 @@ export function ItemSelect({ value, onChange }: { value: string; onChange: (id: 
   );
 }
 
-/** "Customer took a device for amount Y" — decreases stock, increases balance. */
+/** "Customer took a device for amount Y" — decreases stock, increases balance.
+ *  Optionally records the money paid on the spot (payment + accounting in one go). */
 export function RecordTakenModal({ open, onClose, customerId, onSaved }: { open: boolean; onClose: () => void; customerId?: string; onSaved?: () => void }) {
-  const { t, toast, locale } = useApp();
+  const { t, toast, locale, can } = useApp();
   const [cust, setCust] = useState(customerId || '');
   const [itemId, setItemId] = useState('');
   const [itemText, setItemText] = useState('');
@@ -138,8 +139,11 @@ export function RecordTakenModal({ open, onClose, customerId, onSaved }: { open:
   const [date, setDate] = useState(today());
   const [serials, setSerials] = useState('');
   const [notes, setNotes] = useState('');
+  const [paid, setPaid] = useState('');
+  const [method, setMethod] = useState('cash');
   const [busy, setBusy] = useState(false);
   const [item, setItem] = useState<any>(null);
+  const canPay = can('payments.create');
 
   useEffect(() => {
     if (customerId) setCust(customerId);
@@ -167,17 +171,24 @@ export function RecordTakenModal({ open, onClose, customerId, onSaved }: { open:
     }
     setBusy(true);
     try {
-      await api.post('/assignments', {
+      const r = await api.post('/assignments', {
         customer_id: cust,
         item_id: itemId || null,
         item_text: itemId ? null : itemText.trim(),
         quantity: qty,
         amount: Number(amount),
+        paid_amount: Number(paid) || 0,
+        payment_method: Number(paid) > 0 ? method : undefined,
         serial_numbers: serials.trim() || null,
         assigned_at: date,
         notes: notes.trim() || null,
       });
-      toast(t('saved_ok'));
+      const paidN = Number(paid) || 0;
+      if (paidN > 0 && r.data?.new_balance != null) {
+        toast(`${t('saved_ok')} — ${t('new_balance')}: ${money(r.data.new_balance)}`);
+      } else {
+        toast(t('saved_ok'));
+      }
       onSaved?.();
       onClose();
       setItemId('');
@@ -186,12 +197,16 @@ export function RecordTakenModal({ open, onClose, customerId, onSaved }: { open:
       setAmount('');
       setSerials('');
       setNotes('');
+      setPaid('');
+      setMethod('cash');
     } catch (e) {
       toast(errMsg(e), 'err');
     } finally {
       setBusy(false);
     }
   };
+
+  const remaining = Math.max(0, (Number(amount) || 0) - (Number(paid) || 0));
 
   return (
     <Modal open={open} onClose={onClose} title={t('record_taken')} wide>
@@ -221,6 +236,45 @@ export function RecordTakenModal({ open, onClose, customerId, onSaved }: { open:
           <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
         </Field>
       </div>
+
+      {canPay && (
+        <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50/60 p-4 dark:border-emerald-900/60 dark:bg-emerald-900/20">
+          <div className="mb-3 text-xs font-extrabold text-emerald-700 dark:text-emerald-300">
+            {locale === 'ar' ? '💰 دفع الآن (اختياري) — سيسجل دفعة على حساب العميل في نفس الوقت' : '💰 Paid now (optional) — records a customer payment at the same time'}
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label={locale === 'ar' ? 'المدفوع الآن' : 'Paid now'}>
+              <div className="flex gap-1.5">
+                {[0, 0.5, 1].map((f) => (
+                  <button
+                    type="button"
+                    key={f}
+                    className="rounded-lg border border-emerald-200 bg-white px-2.5 py-1 text-[11px] font-bold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-slate-900 dark:text-emerald-300"
+                    onClick={() => setPaid(f === 0 ? '' : String(Math.round(Number(amount) * f)))}
+                  >
+                    {f === 0 ? (locale === 'ar' ? 'بدون' : 'None') : f === 0.5 ? (locale === 'ar' ? 'نصف' : 'Half') : (locale === 'ar' ? 'كامل' : 'Full')}
+                  </button>
+                ))}
+              </div>
+              <Input type="number" min={0} value={paid} onChange={(e) => setPaid(e.target.value)} dir="ltr" placeholder="0" />
+            </Field>
+            <Field label={t('method')}>
+              <Select value={method} onChange={(e) => setMethod(e.target.value)}>
+                <option value="cash">{t('cash')}</option>
+                <option value="transfer">{t('transfer')}</option>
+                <option value="other">{t('other')}</option>
+              </Select>
+            </Field>
+          </div>
+          {Number(amount) > 0 && (
+            <div className="mt-2 text-xs font-bold text-slate-500 dark:text-slate-300">
+              {locale === 'ar' ? 'المتبقي على العميل:' : 'Customer remaining:'}{' '}
+              <span dir="ltr" className="text-rose-600 dark:text-rose-400">{money(remaining)}</span>
+            </div>
+          )}
+        </div>
+      )}
+
       {item && (
         <div className="mt-2 rounded-xl bg-amber-50 px-4 py-2.5 text-xs font-bold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
           {locale === 'ar' ? 'سيتم خصم' : 'Stock will decrease by'} {qty} ← {num(item.quantity)} → {num(Number(item.quantity) - qty)}

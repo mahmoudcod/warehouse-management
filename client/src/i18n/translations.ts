@@ -245,6 +245,9 @@ export const t_dict: Dict = {
   locked_periods: { ar: 'الفترات المقفلة', en: 'Locked periods' },
   lock_month: { ar: 'قفل شهر', en: 'Lock month' },
   locked_hint: { ar: 'لا يمكن تعديل قيود الشهر المقفل إلا بموافقة مدير النظام', en: 'Entries in a locked month can only be changed with Super Admin approval' },
+  month: { ar: 'الشهر', en: 'Month' },
+  entries: { ar: 'قيود', en: 'Entries' },
+  paid_at_record: { ar: 'مدفوع عند التسجيل', en: 'Paid at record' },
   linked_payment: { ar: 'مرتبط بمدفوعة عميل', en: 'Linked to customer payment' },
   add_category: { ar: 'إضافة بند', en: 'Add category' },
 

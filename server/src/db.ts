@@ -225,6 +225,8 @@ const Assignment = mongoose.model(
     unit_price: { type: Number, default: 0 },
     amount: { type: Number, default: 0 },
     credited_amount: { type: Number, default: 0 },
+    initial_paid: { type: Number, default: 0 }, // payment recorded together with the assignment
+    payment_id: { type: Number, default: null },
     serial_numbers: { type: String, default: null },
     assigned_at: { type: String, required: true }, // YYYY-MM-DD
     returned_at: { type: Date, default: null },

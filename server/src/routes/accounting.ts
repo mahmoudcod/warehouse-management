@@ -4,7 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { z } from 'zod';
 import {
-  Transaction, TransactionCategory, Account, Transfer, ClosedPeriod, DailyClose, User, Customer,
+  Transaction, TransactionCategory, Account, Transfer, ClosedPeriod, DailyClose, User, Customer, Payment,
   createWithId, withTransaction, isoDate, rx, r2, strip, todayStr,
 } from '../db';
 import { asyncH, badRequest, forbidden, notFound } from '../errors';
@@ -418,7 +418,57 @@ router.get(
       { $sort: { period: -1 } },
       { $unset: ['u'] },
     ]);
-    res.json(rows);
+    // Financial summary of every locked month so the UI can show what's inside it
+    const months = rows.map((r: any) => String(r.period).slice(0, 7));
+    if (!months.length) return res.json([]);
+    const monthBounds = months.map((m) => ({ m, from: `${m}-01`, to: new Date(Number(m.slice(0, 4)), Number(m.slice(5, 7)), 0).toISOString().slice(0, 10) }));
+    const tx = await Transaction.aggregate([
+      { $match: { status: 'active', deleted_at: null, occurred_at: { $gte: monthBounds[0].from, $lte: monthBounds[monthBounds.length - 1].to } } },
+      {
+        $group: {
+          _id: { m: { $substrBytes: ['$occurred_at', 0, 7] }, type: '$type' },
+          amount: { $sum: '$amount' },
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+    const pays = await Payment.aggregate([
+      { $match: { status: 'active', deleted_at: null, paid_at: { $gte: monthBounds[0].from, $lte: monthBounds[monthBounds.length - 1].to } } },
+      { $group: { _id: { $substrBytes: ['$paid_at', 0, 7] }, collected: { $sum: '$amount' }, payments_count: { $sum: 1 } } },
+    ]);
+    const assigns = await (async () => {
+      const { Assignment } = await import('../db');
+      return Assignment.aggregate([
+        { $match: { status: { $ne: 'voided' }, deleted_at: null, assigned_at: { $gte: monthBounds[0].from, $lte: monthBounds[monthBounds.length - 1].to } } },
+        { $group: { _id: { $substrBytes: ['$assigned_at', 0, 7] }, taken_total: { $sum: '$amount' }, assignments_count: { $sum: 1 } } },
+      ]);
+    })();
+    const txByMonth = new Map<string, any>();
+    for (const t of tx) {
+      const e = txByMonth.get((t as any)._id.m) ?? { income: 0, expense: 0, entries_count: 0 };
+      if ((t as any)._id.type === 'income') { e.income += (t as any).amount; e.entries_count += (t as any).count; }
+      else { e.expense += (t as any).amount; e.entries_count += (t as any).count; }
+      txByMonth.set((t as any)._id.m, e);
+    }
+    const payByMonth = new Map<string, any>(pays.map((p: any) => [p._id, { collected: p.collected, payments_count: p.payments_count }]));
+    const asgByMonth = new Map<string, any>(assigns.map((a: any) => [a._id, { taken_total: a.taken_total, assignments_count: a.assignments_count }]));
+    res.json(rows.map((r: any) => {
+      const m = String(r.period).slice(0, 7);
+      const t = txByMonth.get(m) ?? { income: 0, expense: 0, entries_count: 0 };
+      const p = payByMonth.get(m) ?? { collected: 0, payments_count: 0 };
+      const a = asgByMonth.get(m) ?? { taken_total: 0, assignments_count: 0 };
+      return {
+        ...r,
+        income: Math.round(t.income * 100) / 100,
+        expense: Math.round(t.expense * 100) / 100,
+        net: Math.round((t.income - t.expense) * 100) / 100,
+        entries_count: t.entries_count,
+        collected: Math.round(p.collected * 100) / 100,
+        payments_count: p.payments_count,
+        taken_total: Math.round(a.taken_total * 100) / 100,
+        assignments_count: a.assignments_count,
+      };
+    }));
   })
 );
 

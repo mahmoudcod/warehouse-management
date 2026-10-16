@@ -1,6 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { Assignment, Item, ItemUnit, StockMovement, createWithId, withTransaction, rx, r2, strip, todayStr } from '../db';
+import {
+  Assignment, Item, ItemUnit, StockMovement, Payment, Transaction, Account, TransactionCategory, ClosedPeriod,
+  createWithId, withTransaction, nextSequence, customerBalance, rx, r2, strip, todayStr,
+} from '../db';
 import { asyncH, badRequest, forbidden, notFound } from '../errors';
 import { audit } from '../audit';
 import { parseList, runAggList } from '../paging';
@@ -16,6 +19,8 @@ const createBody = z.object({
   quantity: z.number().positive().default(1),
   unit_price: z.number().nonnegative().optional(),
   amount: z.number().nonnegative(),
+  paid_amount: z.number().nonnegative().optional().default(0), // payment taken at the same moment
+  payment_method: z.enum(['cash', 'transfer', 'other']).optional(),
   serial_numbers: z.string().optional().nullable(),
   unit_ids: z.array(numId).optional(),
   assigned_at: z.string().optional(),
@@ -26,6 +31,8 @@ const createBody = z.object({
  * Record "customer took a device for amount Y".
  * Atomic: validates stock, decrements it, writes a stock movement, marks
  * serialized units, and inserts the assignment (the debit).
+ * Optionally records the payment taken on the spot: payment row + linked
+ * income transaction + account balance, all in the same transaction.
  */
 router.post(
   '/',
@@ -33,6 +40,7 @@ router.post(
     if (!req.user!.permissions.includes('assignments.create')) throw forbidden();
     const body = createBody.parse(req.body);
     if (!body.item_id && !body.item_text) throw badRequest('Pick an inventory item or enter a free-text description');
+    if (body.paid_amount > 0 && !req.user!.permissions.includes('payments.create')) throw forbidden();
     const created = await withTransaction(async (session) => {
       let itemName: string | null = null;
       let qty = body.quantity;
@@ -81,10 +89,51 @@ router.post(
       for (const uid of body.unit_ids || []) {
         await ItemUnit.updateOne({ id: uid }, { assignment_id: a.id }, { session });
       }
+      // payment taken on the spot → same accounting flow as POST /payments
+      let receiptNumber: string | null = null;
+      if (body.paid_amount > 0) {
+        const method = body.payment_method || 'cash';
+        const month = a.assigned_at.slice(0, 7);
+        const closed: any = await ClosedPeriod.findOne({ period: `${month}-01` }).session(session);
+        if (closed && req.user!.role !== 'super_admin') {
+          throw forbidden(`Month ${month} is closed — a Super Admin must approve changes to locked periods`);
+        }
+        const seq = await nextSequence('receipt', session);
+        receiptNumber = `R-${new Date().toISOString().slice(0, 7).replace('-', '')}-${String(seq).padStart(5, '0')}`;
+        const p: any = await createWithId(
+          Payment,
+          {
+            customer_id: body.customer_id, amount: body.paid_amount, method,
+            paid_at: a.assigned_at, receipt_number: receiptNumber, received_by: req.user!.id,
+            notes: `دفعة عند تسجيل جهاز #${a.id}`,
+          },
+          session
+        );
+        const cat: any = await TransactionCategory.findOne({ is_default: true, name: 'customer_collections', deleted_at: null }).session(session);
+        const acc: any = await Account.findOne({ is_active: true, deleted_at: null, type: method === 'cash' ? 'cash' : 'bank' }).sort({ created_at: 1 }).session(session);
+        const t: any = await createWithId(
+          Transaction,
+          {
+            type: 'income', amount: body.paid_amount, category_id: cat?.id ?? null, occurred_at: a.assigned_at,
+            method, account_id: acc?.id ?? null, customer_id: body.customer_id, payment_id: p.id,
+            notes: `Payment ${receiptNumber} — assignment #${a.id}`, created_by: req.user!.id,
+          },
+          session
+        );
+        await Payment.updateOne({ id: p.id }, { transaction_id: t.id }, { session });
+        if (acc?.id) await Account.updateOne({ id: acc.id }, { $inc: { balance: body.paid_amount } }, { session });
+        await Assignment.updateOne({ id: a.id }, { initial_paid: body.paid_amount, payment_id: p.id }, { session });
+      }
       return a;
     });
-    await audit(req, { action: 'create', entity: 'assignment', entity_id: created.id, new_value: strip(created.toObject()) });
-    res.status(201).json(strip(created.toObject()));
+    await audit(req, { action: 'create', entity: 'assignment', entity_id: created.id, new_value: { ...strip(created.toObject()), initial_paid: body.paid_amount } });
+    const payload: any = strip(created.toObject());
+    payload.initial_paid = body.paid_amount;
+    if (body.paid_amount > 0) {
+      const bal = await customerBalance(body.customer_id);
+      payload.new_balance = bal.balance;
+    }
+    res.status(201).json(payload);
   })
 );
 
