@@ -96,6 +96,15 @@ export default function InventoryPage() {
     };
     try {
       if (editing) {
+        // Quantity changes go through the stock-movement ledger (audit-safe):
+        // apply an adjustment first, then patch the item fields.
+        const delta = Math.round((Number(form.quantity) - Number(editing.quantity)) * 100) / 100;
+        if (delta !== 0) {
+          if (!form.qty_reason || form.qty_reason.trim().length < 3) {
+            return toast(locale === 'ar' ? 'أدخل سبب تعديل الكمية' : 'Enter a reason for the quantity change', 'err');
+          }
+          await api.post(`/items/${editing.id}/adjust`, { delta, reason: form.qty_reason.trim() });
+        }
         await api.patch(`/items/${editing.id}`, body);
       } else {
         body.initial_quantity = Number(form.initial_quantity) || 0;
@@ -192,7 +201,7 @@ export default function InventoryPage() {
                     title={t('edit')}
                     onClick={() => {
                       setEditing(i);
-                      setForm({ ...emptyItem, ...i, category_id: i.category_id || '', warehouse_id: i.warehouse_id || '' });
+                      setForm({ ...emptyItem, ...i, category_id: i.category_id || '', warehouse_id: i.warehouse_id || '', quantity: String(i.quantity), qty_reason: '' });
                       setFormOpen(true);
                     }}
                   >
@@ -320,8 +329,27 @@ export default function InventoryPage() {
           <Field label={t('cost_price')} required><Input type="number" min={0} value={form.cost_price} onChange={(e) => setForm({ ...form, cost_price: e.target.value })} dir="ltr" /></Field>
           <Field label={t('selling_price')} required><Input type="number" min={0} value={form.selling_price} onChange={(e) => setForm({ ...form, selling_price: e.target.value })} dir="ltr" /></Field>
           <Field label={t('min_stock')}><Input type="number" min={0} value={form.min_stock_level} onChange={(e) => setForm({ ...form, min_stock_level: e.target.value })} dir="ltr" /></Field>
-          {!editing && (
+          {!editing ? (
             <Field label={t('initial_stock')}><Input type="number" min={0} value={form.initial_quantity} onChange={(e) => setForm({ ...form, initial_quantity: e.target.value })} dir="ltr" /></Field>
+          ) : (
+            <Field
+              label={t('quantity_in_stock')}
+              required
+              hint={
+                Number(form.quantity) !== Number(editing.quantity)
+                  ? (locale === 'ar'
+                    ? `سيتم تسجيل حركة تسوية: ${Number(editing.quantity)} → ${Number(form.quantity)} (${(Number(form.quantity) - Number(editing.quantity)) > 0 ? '+' : ''}${Math.round((Number(form.quantity) - Number(editing.quantity)) * 100) / 100})`
+                    : `A stock adjustment will be recorded: ${Number(editing.quantity)} → ${Number(form.quantity)} (${(Number(form.quantity) - Number(editing.quantity)) > 0 ? '+' : ''}${Math.round((Number(form.quantity) - Number(editing.quantity)) * 100) / 100})`)
+                  : undefined
+              }
+            >
+              <Input type="number" min={0} value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} dir="ltr" />
+            </Field>
+          )}
+          {editing && Number(form.quantity) !== Number(editing.quantity) && (
+            <Field label={t('adjustment_reason')} required className="sm:col-span-2">
+              <Textarea rows={2} value={form.qty_reason} onChange={(e) => setForm({ ...form, qty_reason: e.target.value })} placeholder={locale === 'ar' ? 'مثال: جرد فعلي / تالف / مرتجع' : 'e.g. physical count / damaged / return'} />
+            </Field>
           )}
           <Field className="sm:col-span-2">
             <label className="flex cursor-pointer items-center gap-2 text-sm font-bold text-slate-600 dark:text-slate-300">
