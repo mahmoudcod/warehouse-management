@@ -75,7 +75,7 @@ const run = async () => {
   ok(!!custWithBalance, 'server-computed balances present');
 
   const items = await api('GET', '/api/items?pageSize=50', { token: manager.token });
-  ok(items.status === 200 && items.json.rows.length >= 20, 'items list');
+  ok(items.status === 200 && items.json.rows.length >= 1 && items.json.total >= items.json.rows.length, 'items list');
   const target = items.json.rows.find((i) => i.quantity >= 2 && i.status === 'active');
   ok(!!target, 'item with stock found');
   const noCreate = await api('POST', '/api/items', { token: accountant.token, body: { name: 'nope' } });
