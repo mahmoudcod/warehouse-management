@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import {
-  Item, Assignment, Payment, Transaction, TransactionCategory, Customer,
+  Item, Assignment, Payment, Transaction, TransactionCategory, Customer, Warehouse,
   balanceMap, overdueCustomerSet, r2, todayStr, strip,
 } from '../db';
 import { asyncH } from '../errors';
@@ -215,6 +215,32 @@ router.get(
       void set;
     }
 
+    // Stock distribution per warehouse (quantity + value) for the dashboard widget
+    const stockByWarehouse = await Item.aggregate([
+      { $match: { deleted_at: null } },
+      {
+        $group: {
+          _id: '$warehouse_id',
+          items_count: { $sum: 1 },
+          quantity: { $sum: '$quantity' },
+          cost_value: { $sum: { $multiply: ['$cost_price', '$quantity'] } },
+          sell_value: { $sum: { $multiply: ['$selling_price', '$quantity'] } },
+        },
+      },
+      { $sort: { quantity: -1 } },
+    ]);
+    const whDocs = await Warehouse.find({ deleted_at: null }).lean();
+    const whName = new Map(whDocs.map((w: any) => [w.id, { name: w.name, name_ar: w.name_ar }]));
+    const warehouses = stockByWarehouse.map((s: any) => ({
+      warehouse_id: s._id,
+      name: whName.get(s._id)?.name ?? '—',
+      name_ar: whName.get(s._id)?.name_ar ?? null,
+      items_count: s.items_count,
+      quantity: s.quantity,
+      cost_value: Math.round(s.cost_value * 100) / 100,
+      sell_value: Math.round(s.sell_value * 100) / 100,
+    }));
+
     res.json({
       kpis: {
         items_in_stock: stockAgg[0]?.total_quantity ?? 0,
@@ -237,6 +263,7 @@ router.get(
         top_customers: topCustomers,
         monthly_collections: paymentsMonthsAgg,
       },
+      warehouses,
       recent: {
         assignments: recentAssignments,
         payments: recentPayments,

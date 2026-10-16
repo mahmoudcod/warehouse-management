@@ -177,6 +177,33 @@ export default function DashboardPage() {
       </div>
 
       {/* Recent + low stock */}
+      {(data.warehouses || []).length > 0 && (
+        <Card className="mt-4 p-4">
+          <h3 className="mb-3 text-sm font-extrabold text-slate-700 dark:text-slate-200">{t('warehouses')} — {locale === 'ar' ? 'توزيع المخزون' : 'stock distribution'}</h3>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {data.warehouses.map((w: any) => {
+              const totalQty = data.warehouses.reduce((s: number, x: any) => s + Number(x.quantity || 0), 0) || 1;
+              const pct = Math.round((Number(w.quantity || 0) / totalQty) * 100);
+              return (
+                <div key={w.warehouse_id ?? 'none'} className="rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-slate-700 dark:text-slate-200">{locale === 'ar' ? w.name_ar || w.name : w.name}</span>
+                    <span className="font-extrabold text-slate-800 dark:text-slate-100"><span dir="ltr">{num(w.quantity)}</span> <span className="text-[10px] font-bold text-slate-400">({pct}%)</span></span>
+                  </div>
+                  <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                    <div className="h-full rounded-full bg-gradient-to-r from-sky-500 to-violet-500" style={{ width: `${pct}%` }} />
+                  </div>
+                  <div className="mt-1.5 flex justify-between text-[10px] text-slate-400">
+                    <span>{num(w.items_count)} {locale === 'ar' ? 'صنف' : 'items'}</span>
+                    <span dir="ltr">{money(w.cost_value)}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
       <div className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="p-4">
           <h3 className="mb-3 text-sm font-extrabold text-slate-700 dark:text-slate-200">{t('nav_assignments')}</h3>

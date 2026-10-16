@@ -3,7 +3,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
-import { connectDB } from './db';
+import { connectDB, mongoose } from './db';
 import { authenticate } from './middleware/auth';
 import { handleError, AppError } from './errors';
 
@@ -24,6 +24,8 @@ import searchRoutes from './routes/search';
 
 const app = express();
 app.disable('x-powered-by');
+// Behind Render's proxy: makes req.ip the real client IP
+app.set('trust proxy', 1);
 app.use(cors({
   origin: [
     'https://warehouse-management-client.pages.dev',
@@ -32,10 +34,26 @@ app.use(cors({
   ],
   credentials: true
 }));
+// Basic security headers
+app.use((_req, res, next) => {
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('X-Frame-Options', 'DENY');
+  res.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  next();
+});
 app.use(express.json({ limit: '2mb' }));
 
-// Public health check for platform probes (Render healthCheckPath)
-app.get('/api/health', (_req, res) => res.json({ ok: true }));
+// Public health check for platform probes — always 200 (Render healthCheckPath),
+// but reports database connectivity so monitoring can alert on it
+app.get('/api/health', (_req, res) => {
+  const state = mongoose.connection.readyState; // 1 connected, 2 connecting, 0 disconnected
+  res.json({
+    ok: true,
+    db: state === 1 ? 'connected' : state === 2 ? 'connecting' : 'disconnected',
+    uptime_s: Math.round(process.uptime()),
+    time: new Date().toISOString(),
+  });
+});
 
 // Auth router is public at its root; protected endpoints apply authenticate() themselves
 app.use('/api/auth', authRoutes);
@@ -75,6 +93,10 @@ if (fs.existsSync(clientDist)) {
 
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
 app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  // Malformed JSON body → clean 400 instead of a 500
+  if (err?.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+    return res.status(400).json({ error: 'Invalid JSON body' });
+  }
   handleError(err, res);
 });
 

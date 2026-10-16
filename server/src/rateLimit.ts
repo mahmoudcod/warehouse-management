@@ -3,6 +3,12 @@ import { NextFunction, Request, Response } from 'express';
 /** Simple in-memory sliding-window limiter — protects login & password reset against brute force. */
 const buckets = new Map<string, { count: number; resetAt: number }>();
 
+// Purge expired buckets so the map doesn't grow unbounded
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, b] of buckets) if (b.resetAt < now) buckets.delete(k);
+}, 60_000).unref();
+
 export function rateLimit(keyFn: (req: Request) => string, max: number, windowMs: number) {
   return (req: Request, res: Response, next: NextFunction) => {
     const key = keyFn(req);
