@@ -218,6 +218,113 @@ const run = async () => {
   const stmt = await api('GET', `/api/customers/${custId}/statement`, { token: admin.token });
   ok(stmt.status === 200 && stmt.json.entries.length > 0 && typeof stmt.json.entries[0].running_balance === 'number', 'customer statement with running balance');
 
+  console.log('— Suppliers & purchase orders —');
+  const epoch = Date.now();
+  const supName = `Test Supplier ${epoch}`;
+  const supCreate = await api('POST', '/api/suppliers', { token: admin.token, body: { name: supName } });
+  ok(supCreate.status === 201 && !!supCreate.json.id, 'supplier created');
+  const supId = supCreate.json.id;
+
+  const poItemRow = items.json.rows.find((i) => i.status === 'active' && i.id !== target.id) || target;
+  const poItemBefore = Number((await api('GET', `/api/items/${poItemRow.id}`, { token: admin.token })).json.quantity);
+
+  const po = await api('POST', `/api/suppliers/${supId}/orders`, {
+    token: admin.token,
+    body: {
+      items: [
+        { item_id: poItemRow.id, quantity: 2, unit_cost: 100 },
+        { item_text: 'smoke line', quantity: 1, unit_cost: 50 },
+      ],
+    },
+  });
+  ok(po.status === 201 && Number(po.json.total) === 250, `PO created with total 250 (got ${po.json?.total})`);
+  const poId = po.json.id;
+
+  const recv1 = await api('POST', `/api/suppliers/orders/${poId}/receive`, {
+    token: admin.token,
+    body: { lines: [{ index: 0, received_qty: 2 }] },
+  });
+  ok(recv1.status === 200 && recv1.json.status === 'partial', `partial receive accepted (${recv1.json?.status})`);
+
+  const poItemAfter = Number((await api('GET', `/api/items/${poItemRow.id}`, { token: admin.token })).json.quantity);
+  ok(poItemAfter === poItemBefore + 2, `PO receive increased stock by 2 (${poItemBefore} → ${poItemAfter})`);
+
+  const movs = await api('GET', `/api/movements?item_id=${poItemRow.id}`, { token: admin.token });
+  ok(
+    movs.status === 200 && movs.json.rows.some((m) => m.movement_type === 'purchase' && m.reference_type === 'purchase_order' && Number(m.reference_id) === poId),
+    'purchase movement with purchase_order reference logged'
+  );
+
+  const recv2 = await api('POST', `/api/suppliers/orders/${poId}/receive`, {
+    token: admin.token,
+    body: { lines: [{ index: 1, received_qty: 1 }] },
+  });
+  ok(recv2.status === 200 && recv2.json.status === 'received', `second receive completes PO (${recv2.json?.status})`);
+
+  const supAfter = (await api('GET', `/api/suppliers/${supId}`, { token: admin.token })).json;
+  ok(Number(supAfter.balance) === 250, `supplier balance is 250 (got ${supAfter.balance})`);
+
+  const supPay = await api('POST', `/api/suppliers/${supId}/payments`, {
+    token: admin.token,
+    body: { amount: 250, method: 'cash', paid_at: new Date().toISOString().slice(0, 10) },
+  });
+  ok(
+    supPay.status === 201 && Number(supPay.json.balance) === 0 && !!supPay.json.transaction_id,
+    `supplier payment recorded, balance 0, transaction linked (balance=${supPay.json?.balance}, tx=${supPay.json?.transaction_id})`
+  );
+
+  const accLink = await api('GET', `/api/accounting?search=${encodeURIComponent(supName)}`, { token: accountant.token });
+  ok(
+    accLink.status === 200 && accLink.json.rows.some((t) => t.type === 'expense' && Number(t.amount) === 250),
+    'supplier payment auto-created 250 expense entry in accounting'
+  );
+
+  const supDelete = await api('DELETE', `/api/suppliers/${supId}`, { token: admin.token });
+  ok(supDelete.status === 200 && supDelete.json.ok === true, 'supplier with zero balance deleted');
+
+  console.log('— Excel/CSV import —');
+  const impItems = await api('POST', '/api/import', {
+    token: admin.token,
+    body: {
+      type: 'items',
+      rows: [
+        { name: `Import Test A ${epoch}`, sku: `IMP-${epoch}a`, cost_price: 10, selling_price: 15, quantity: 3 },
+        { name: `Import Test B ${epoch}`, sku: `IMP-${epoch}b`, cost_price: 5, selling_price: 8, quantity: 0 },
+        { name: 'Import Test Dup', sku: target.sku },
+      ],
+    },
+  });
+  ok(
+    impItems.status === 200 && impItems.json.inserted === 2 && impItems.json.errors.length === 1,
+    `items import: 2 inserted, 1 duplicate-SKU error (got ${impItems.json?.inserted} inserted, ${impItems.json?.errors?.length} errors)`
+  );
+
+  let dupPhone = customers.json.rows.map((c) => c.phone).find((p) => p);
+  if (!dupPhone) {
+    const seed = await api('POST', '/api/customers', {
+      token: admin.token,
+      body: { name: `Phone Seed ${epoch}`, phone: `0188${String(epoch).slice(-8)}` },
+    });
+    dupPhone = seed.status === 201 ? seed.json.phone : null;
+  }
+  ok(!!dupPhone, 'existing customer phone found for duplicate test');
+  if (dupPhone) {
+    const impCusts = await api('POST', '/api/import', {
+      token: admin.token,
+      body: {
+        type: 'customers',
+        rows: [
+          { name: `Import Cust ${epoch}`, phone: `0199${String(epoch).slice(-8)}` },
+          { name: 'Import Dup', phone: dupPhone },
+        ],
+      },
+    });
+    ok(
+      impCusts.status === 200 && impCusts.json.inserted === 1 && impCusts.json.errors.length === 1,
+      `customers import: 1 inserted, 1 duplicate-phone error (got ${impCusts.json?.inserted} inserted, ${impCusts.json?.errors?.length} errors)`
+    );
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 };

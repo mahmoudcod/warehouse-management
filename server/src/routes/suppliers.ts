@@ -12,9 +12,9 @@ function can(req: Request, perm: string): boolean {
 }
 
 /** Payable = total of received/partial POs − supplier payments made. */
-async function supplierBalance(supplierId: number): Promise<number> {
-  const pos = await PurchaseOrder.find({ supplier_id: supplierId, status: { $in: ['received', 'partial'] } }).lean();
-  const pays = await SupplierPayment.find({ supplier_id: supplierId }).lean();
+async function supplierBalance(supplierId: number, session?: any): Promise<number> {
+  const pos = await PurchaseOrder.find({ supplier_id: supplierId, status: { $in: ['received', 'partial'] } }).session(session).lean();
+  const pays = await SupplierPayment.find({ supplier_id: supplierId }).session(session).lean();
   const billed = pos.reduce((s, p) => s + Number(p.total || 0), 0);
   const paid = pays.reduce((s, p) => s + Number(p.amount || 0), 0);
   return Math.round((billed - paid) * 100) / 100;
@@ -293,7 +293,7 @@ router.post(
       if (accountId) {
         await Account.updateOne({ id: accountId }, { $inc: { balance: -body.amount } }).session(session as any);
       }
-      return { payment: payment.toJSON(), transaction_id: tx.id, balance: await supplierBalance(supplier!.id as number) };
+      return { payment: payment.toJSON(), transaction_id: tx.id, balance: await supplierBalance(supplier!.id as number, session) };
     });
     await audit(req, { action: 'create', entity: 'supplier_payment', entity_id: String(created.payment.id), new_value: created.payment });
     res.status(201).json(created);
