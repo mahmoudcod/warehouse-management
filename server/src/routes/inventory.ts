@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { Category, Warehouse, Item, StockMovement, User, createWithId, withTransaction, rx, strip, todayStr } from '../db';
+import { Category, Warehouse, Item, ItemUnit, StockMovement, User, createWithId, withTransaction, rx, r2, strip, todayStr } from '../db';
 import { asyncH, badRequest, forbidden, notFound } from '../errors';
 import { audit } from '../audit';
 import { parseList, runAggList } from '../paging';
@@ -69,7 +69,51 @@ categories.delete(
 // ======================= Warehouses =======================
 const warehouses = Router();
 
-const whBody = z.object({ name: z.string().min(2), name_ar: z.string().optional().nullable(), location: z.string().optional().nullable(), is_default: z.boolean().optional() });
+/** in-stock serialized-unit counts per item id (mirror of items.ts unitsInStockMap). */
+async function unitsInStockMap(itemIds: number[]): Promise<Map<number, number>> {
+  if (!itemIds.length) return new Map();
+  const rows = await ItemUnit.aggregate([
+    { $match: { item_id: { $in: itemIds }, status: 'in_stock', deleted_at: null } },
+    { $group: { _id: '$item_id', c: { $sum: 1 } } },
+  ]);
+  return new Map(rows.map((r: any) => [r._id, r.c]));
+}
+
+/**
+ * Mirror of the decorateItems helper in routes/items.ts (not exported there, and this
+ * file may not edit items.ts) — keeps warehouse-detail item rows identical in shape
+ * to the items-list rows.
+ */
+async function decorateItems(docs: any[]) {
+  const rows = docs.map(strip);
+  const unitCounts = await unitsInStockMap(rows.map((r: any) => r.id));
+  const catIds = [...new Set(rows.map((r: any) => r.category_id).filter((x) => x != null))];
+  const whIds = [...new Set(rows.map((r: any) => r.warehouse_id).filter((x) => x != null))];
+  const [cats, whs] = await Promise.all([
+    catIds.length ? Category.find({ id: { $in: catIds } }).lean() : [],
+    whIds.length ? Warehouse.find({ id: { $in: whIds } }).lean() : [],
+  ]);
+  const catById = new Map<number, any>(cats.map((c: any) => [c.id, c] as [number, any]));
+  const whById = new Map<number, any>(whs.map((w: any) => [w.id, w] as [number, any]));
+  return rows.map((r: any) => {
+    const cat = r.category_id ? catById.get(r.category_id) : null;
+    const wh = r.warehouse_id ? whById.get(r.warehouse_id) : null;
+    return {
+      ...r,
+      category_name: cat?.name ?? null,
+      category_name_ar: cat?.name_ar ?? null,
+      warehouse_name: wh?.name ?? null,
+      warehouse_name_ar: wh?.name_ar ?? null,
+      stock_cost_value: r2(r.cost_price * r.quantity),
+      stock_sell_value: r2(r.selling_price * r.quantity),
+      low_stock: r.quantity <= r.min_stock_level && r.min_stock_level > 0,
+      over_stock: r.quantity > r.max_stock_level && r.max_stock_level > 0,
+      units_in_stock: unitCounts.get(r.id) ?? 0,
+    };
+  });
+}
+
+const whBody = z.object({ name: z.string().min(2), name_ar: z.string().optional().nullable(), location: z.string().optional().nullable(), is_default: z.boolean().optional(), capacity: z.number().nonnegative().optional() });
 
 warehouses.get(
   '/',
@@ -89,19 +133,115 @@ warehouses.get(
         },
       },
     ]);
+    // one aggregate for all warehouses: in-stock serialized units per warehouse
+    const units = await ItemUnit.aggregate([
+      { $match: { status: 'in_stock', deleted_at: null, warehouse_id: { $ne: null } } },
+      { $group: { _id: '$warehouse_id', c: { $sum: 1 } } },
+    ]);
     const byId = new Map(stats.map((s: any) => [s._id, s]));
+    const unitsById = new Map(units.map((u: any) => [u._id, u.c]));
     res.json(docs.map((w: any) => {
       const s: any = byId.get(w.id);
+      const capacity = w.capacity ?? 0;
+      const total_quantity = s?.total_quantity ?? 0;
       return {
         ...w,
+        capacity,
         items_count: s?.items_count ?? 0,
-        total_quantity: s?.total_quantity ?? 0,
+        total_quantity,
         cost_value: Math.round((s?.cost_value ?? 0) * 100) / 100,
         sell_value: Math.round((s?.sell_value ?? 0) * 100) / 100,
         out_count: s?.out_count ?? 0,
         low_count: s?.low_count ?? 0,
+        units_in_stock: unitsById.get(w.id) ?? 0,
+        utilization: capacity > 0 ? Math.round((total_quantity / capacity) * 100) : null,
       };
     }));
+  })
+);
+
+/** Warehouse detail: profile + stock stats + decorated items + last 100 movements touching it. */
+warehouses.get(
+  '/:id',
+  asyncH(async (req: Request, res: Response) => {
+    if (!req.user!.permissions.includes('inventory.view')) throw forbidden();
+    const id = Number(req.params.id);
+    const wh: any = await Warehouse.findOne({ id, deleted_at: null }).lean();
+    if (!wh) throw notFound('Warehouse not found');
+
+    const [stats, itemDocs, moveDocs, unitsInStock] = await Promise.all([
+      Item.aggregate([
+        { $match: { deleted_at: null, warehouse_id: id } },
+        {
+          $group: {
+            _id: '$warehouse_id',
+            items_count: { $sum: 1 },
+            total_quantity: { $sum: '$quantity' },
+            cost_value: { $sum: { $multiply: ['$cost_price', '$quantity'] } },
+            sell_value: { $sum: { $multiply: ['$selling_price', '$quantity'] } },
+            out_count: { $sum: { $cond: [{ $lte: ['$quantity', 0] }, 1, 0] } },
+            low_count: { $sum: { $cond: [{ $and: [{ $gt: ['$quantity', 0] }, { $lte: ['$quantity', '$min_stock_level'] }] }, 1, 0] } },
+          },
+        },
+      ]),
+      Item.find({ warehouse_id: id, deleted_at: null }).lean(),
+      StockMovement.find({ $or: [{ from_warehouse_id: id }, { to_warehouse_id: id }] }).sort({ created_at: -1 }).limit(100).lean(),
+      ItemUnit.countDocuments({ warehouse_id: id, status: 'in_stock', deleted_at: null }),
+    ]);
+
+    const s: any = stats[0];
+    const capacity = wh.capacity ?? 0;
+    const total_quantity = s?.total_quantity ?? 0;
+
+    const items = await decorateItems(itemDocs);
+
+    // join item + performer names onto the movements (same pattern as the item detail route in items.ts)
+    const itemIds = [...new Set(moveDocs.map((m: any) => m.item_id).filter((x) => x != null))];
+    const userIds = [...new Set(moveDocs.map((m: any) => m.performed_by).filter((x) => x != null))];
+    const [mvItems, users] = await Promise.all([
+      itemIds.length ? Item.find({ id: { $in: itemIds } }).lean() : [],
+      userIds.length ? User.find({ id: { $in: userIds } }).lean() : [],
+    ]);
+    const itemById = new Map<number, any>(mvItems.map((i: any) => [i.id, i] as [number, any]));
+    const uById = new Map<number, any>(users.map((u: any) => [u.id, u] as [number, any]));
+
+    res.json({
+      warehouse: {
+        id: wh.id,
+        name: wh.name,
+        name_ar: wh.name_ar ?? null,
+        location: wh.location ?? null,
+        is_default: wh.is_default,
+        capacity,
+        created_at: wh.created_at,
+      },
+      stats: {
+        items_count: s?.items_count ?? 0,
+        total_quantity,
+        cost_value: Math.round((s?.cost_value ?? 0) * 100) / 100,
+        sell_value: Math.round((s?.sell_value ?? 0) * 100) / 100,
+        low_count: s?.low_count ?? 0,
+        out_count: s?.out_count ?? 0,
+        units_in_stock: unitsInStock,
+        utilization: capacity > 0 ? Math.round((total_quantity / capacity) * 100) : null,
+      },
+      items,
+      movements: moveDocs.map((m: any) => {
+        const it: any = itemById.get(m.item_id);
+        return {
+          id: m.id,
+          created_at: m.created_at,
+          movement_type: m.movement_type,
+          quantity: m.quantity,
+          item_id: m.item_id,
+          item_name: it?.name ?? null,
+          item_name_ar: it?.name_ar ?? null,
+          unit_serial: m.unit_serial ?? null,
+          reason: m.reason ?? null,
+          performed_by_name: uById.get(m.performed_by)?.name ?? null,
+        };
+      }),
+    });
   })
 );
 
@@ -114,7 +254,7 @@ warehouses.post(
       if (body.is_default) await Warehouse.updateMany({}, { is_default: false }, { session });
       return createWithId(
         Warehouse,
-        { name: body.name, name_ar: body.name_ar || null, location: body.location || null, is_default: body.is_default ?? false },
+        { name: body.name, name_ar: body.name_ar || null, location: body.location || null, capacity: body.capacity ?? 0, is_default: body.is_default ?? false },
         session
       );
     });
@@ -136,6 +276,7 @@ warehouses.patch(
       if (body.name != null) update.name = body.name;
       if (body.name_ar !== undefined) update.name_ar = body.name_ar;
       if (body.location !== undefined) update.location = body.location;
+      if (body.capacity != null) update.capacity = body.capacity;
       if (body.is_default != null) update.is_default = body.is_default;
       await Warehouse.updateOne({ id: old.id }, update, { session });
       const updated: any = await Warehouse.findOne({ id: old.id }).session(session).lean();

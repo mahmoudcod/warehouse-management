@@ -8,6 +8,7 @@ import DashboardPage from './features/dashboard/DashboardPage';
 import CustomersPage from './features/customers/CustomersPage';
 import CustomerProfilePage from './features/customers/CustomerProfilePage';
 import InventoryPage from './features/inventory/InventoryPage';
+import WarehouseDetailPage from './features/warehouses/WarehouseDetailPage';
 import AssignmentsPage from './features/assignments/AssignmentsPage';
 import PaymentsPage from './features/payments/PaymentsPage';
 import SuppliersPage from './features/suppliers/SuppliersPage';
@@ -46,6 +47,7 @@ function Shell() {
         <Route path="/customers" element={<Protected perm="customers.view"><CustomersPage /></Protected>} />
         <Route path="/customers/:id" element={<Protected perm="customers.view"><CustomerProfilePage /></Protected>} />
         <Route path="/inventory" element={<Protected perm="inventory.view"><InventoryPage /></Protected>} />
+        <Route path="/warehouses/:id" element={<Protected perm="inventory.view"><WarehouseDetailPage /></Protected>} />
         <Route path="/assignments" element={<Protected perm="assignments.view"><AssignmentsPage /></Protected>} />
         <Route path="/payments" element={<Protected perm="payments.view"><PaymentsPage /></Protected>} />
         <Route path="/suppliers" element={<Protected perm="suppliers.view"><SuppliersPage /></Protected>} />

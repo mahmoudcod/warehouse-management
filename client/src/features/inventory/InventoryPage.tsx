@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, Pencil, Trash2, PackageSearch, ArrowLeftRight, Scale, FolderPlus, Warehouse as WhIcon, Boxes, Ban, Upload } from 'lucide-react';
 import { api, errMsg, exportCsv } from '../../api/client';
 import { useApp } from '../../context/AppContext';
@@ -587,16 +587,26 @@ function CategoriesTab({ cats, reload }: { cats: any[]; reload: () => void }) {
 
 function WarehousesTab({ whs, reload }: { whs: any[]; reload: () => void }) {
   const { t, can, toast, locale } = useApp();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', name_ar: '', location: '' });
+  const [editing, setEditing] = useState<any>(null);
+  const [form, setForm] = useState({ name: '', name_ar: '', location: '', capacity: '' });
   const [delTarget, setDelTarget] = useState<any>(null);
 
   const save = async () => {
     try {
-      await api.post('/warehouses', form);
+      if (editing) {
+        const body: any = { name: form.name, name_ar: form.name_ar || null, location: form.location || null };
+        // Capacity only travels when the user actually changed it.
+        if ((Number(form.capacity) || 0) !== (Number(editing.capacity) || 0)) body.capacity = Number(form.capacity) || 0;
+        await api.patch(`/warehouses/${editing.id}`, body);
+      } else {
+        await api.post('/warehouses', { name: form.name, name_ar: form.name_ar || null, location: form.location || null, capacity: Number(form.capacity) || 0 });
+      }
       toast(t('saved_ok'));
       setOpen(false);
-      setForm({ name: '', name_ar: '', location: '' });
+      setEditing(null);
+      setForm({ name: '', name_ar: '', location: '', capacity: '' });
       reload();
     } catch (e) { toast(errMsg(e), 'err'); }
   };
@@ -605,61 +615,112 @@ function WarehousesTab({ whs, reload }: { whs: any[]; reload: () => void }) {
     <Card className="p-4">
       {can('inventory.create') && (
         <div className="mb-3 flex justify-end">
-          <Button size="sm" icon={WhIcon} onClick={() => setOpen(true)}>{t('add_warehouse')}</Button>
+          <Button size="sm" icon={WhIcon} onClick={() => { setEditing(null); setForm({ name: '', name_ar: '', location: '', capacity: '' }); setOpen(true); }}>{t('add_warehouse')}</Button>
         </div>
       )}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {whs.map((w) => (
-          <div key={w.id} className="rounded-2xl border border-slate-200 p-4 dark:border-slate-700">
-            <div className="mb-3 flex items-start justify-between gap-2">
-              <div>
-                <div className="font-bold text-slate-800 dark:text-slate-100">
-                  {locale === 'ar' ? w.name_ar || w.name : w.name}
-                  {w.is_default && <Badge color="blue">{locale === 'ar' ? 'افتراضي' : 'default'}</Badge>}
+        {whs.map((w) => {
+          const util = Number(w.utilization) || 0;
+          return (
+            <div
+              key={w.id}
+              className="cursor-pointer rounded-2xl border border-slate-200 p-4 transition hover:border-primary-300 hover:bg-slate-50/60 dark:border-slate-700 dark:hover:border-primary-700 dark:hover:bg-slate-800/40"
+              onClick={() => navigate('/warehouses/' + w.id)}
+            >
+              <div className="mb-3 flex items-start justify-between gap-2">
+                <div>
+                  <div className="font-bold text-slate-800 dark:text-slate-100">
+                    {locale === 'ar' ? w.name_ar || w.name : w.name}
+                    {w.is_default && <Badge color="blue">{locale === 'ar' ? 'افتراضي' : 'default'}</Badge>}
+                  </div>
+                  <div className="text-xs text-slate-400">{w.location || '—'}</div>
                 </div>
-                <div className="text-xs text-slate-400">{w.location || '—'}</div>
+                <div className="flex gap-1">
+                  {can('inventory.edit') && (
+                    <button
+                      className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-primary-600 dark:hover:bg-slate-800"
+                      title={t('edit_warehouse')}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditing(w);
+                        setForm({ name: w.name, name_ar: w.name_ar || '', location: w.location || '', capacity: String(w.capacity ?? 0) });
+                        setOpen(true);
+                      }}
+                    >
+                      <Pencil size={14} />
+                    </button>
+                  )}
+                  {can('inventory.delete') && !w.is_default && Number(w.total_quantity) === 0 && (
+                    <button
+                      className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-900/30"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDelTarget(w);
+                      }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  )}
+                </div>
               </div>
-              {can('inventory.delete') && !w.is_default && Number(w.total_quantity) === 0 && (
-                <button className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-900/30" onClick={() => setDelTarget(w)}>
-                  <Trash2 size={14} />
-                </button>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="rounded-xl bg-slate-50 p-2.5 dark:bg-slate-800/60">
+                  <div className="font-bold text-slate-400">{t('items')}</div>
+                  <div className="mt-0.5 text-base font-extrabold text-slate-800 dark:text-slate-100"><span dir="ltr">{num(w.items_count)}</span></div>
+                </div>
+                <div className="rounded-xl bg-slate-50 p-2.5 dark:bg-slate-800/60">
+                  <div className="font-bold text-slate-400">{locale === 'ar' ? 'إجمالي الكميات' : 'Total units'}</div>
+                  <div className="mt-0.5 text-base font-extrabold text-slate-800 dark:text-slate-100"><span dir="ltr">{num(w.total_quantity)}</span></div>
+                </div>
+                <div className="rounded-xl bg-sky-50 p-2.5 dark:bg-sky-900/20">
+                  <div className="font-bold text-sky-500/80">{locale === 'ar' ? 'قيمة التكلفة' : 'Cost value'}</div>
+                  <div className="mt-0.5 font-extrabold text-sky-700 dark:text-sky-300"><span dir="ltr">{money(w.cost_value)}</span></div>
+                </div>
+                <div className="rounded-xl bg-violet-50 p-2.5 dark:bg-violet-900/20">
+                  <div className="font-bold text-violet-500/80">{locale === 'ar' ? 'قيمة البيع' : 'Sell value'}</div>
+                  <div className="mt-0.5 font-extrabold text-violet-700 dark:text-violet-300"><span dir="ltr">{money(w.sell_value)}</span></div>
+                </div>
+              </div>
+              {Number(w.capacity) > 0 && (
+                <div className="mt-2.5">
+                  <div className="mb-1 flex flex-wrap items-center justify-between gap-1.5 text-xs">
+                    <span className="font-bold text-slate-400">{t('utilization')}</span>
+                    <span className="flex items-center gap-1.5">
+                      <span dir="ltr" className="font-semibold text-slate-600 dark:text-slate-300">{num(w.units_in_stock)} / {num(w.capacity)}</span>
+                      {util > 100 && <Badge color="red">{t('over_capacity')}</Badge>}
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                    <div
+                      className={'h-full rounded-full ' + (util >= 100 ? 'bg-rose-500' : util >= 70 ? 'bg-amber-500' : 'bg-emerald-500')}
+                      style={{ width: Math.min(util, 100) + '%' }}
+                    />
+                  </div>
+                </div>
               )}
-            </div>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className="rounded-xl bg-slate-50 p-2.5 dark:bg-slate-800/60">
-                <div className="font-bold text-slate-400">{t('items')}</div>
-                <div className="mt-0.5 text-base font-extrabold text-slate-800 dark:text-slate-100"><span dir="ltr">{num(w.items_count)}</span></div>
-              </div>
-              <div className="rounded-xl bg-slate-50 p-2.5 dark:bg-slate-800/60">
-                <div className="font-bold text-slate-400">{locale === 'ar' ? 'إجمالي الكميات' : 'Total units'}</div>
-                <div className="mt-0.5 text-base font-extrabold text-slate-800 dark:text-slate-100"><span dir="ltr">{num(w.total_quantity)}</span></div>
-              </div>
-              <div className="rounded-xl bg-sky-50 p-2.5 dark:bg-sky-900/20">
-                <div className="font-bold text-sky-500/80">{locale === 'ar' ? 'قيمة التكلفة' : 'Cost value'}</div>
-                <div className="mt-0.5 font-extrabold text-sky-700 dark:text-sky-300"><span dir="ltr">{money(w.cost_value)}</span></div>
-              </div>
-              <div className="rounded-xl bg-violet-50 p-2.5 dark:bg-violet-900/20">
-                <div className="font-bold text-violet-500/80">{locale === 'ar' ? 'قيمة البيع' : 'Sell value'}</div>
-                <div className="mt-0.5 font-extrabold text-violet-700 dark:text-violet-300"><span dir="ltr">{money(w.sell_value)}</span></div>
+              <div className="mt-2.5 flex flex-wrap gap-1.5">
+                {Number(w.out_count) > 0 && <Badge color="red">{locale === 'ar' ? `${num(w.out_count)} صنف نفد` : `${num(w.out_count)} out of stock`}</Badge>}
+                {Number(w.low_count) > 0 && <Badge color="amber">{locale === 'ar' ? `${num(w.low_count)} صنف منخفض` : `${num(w.low_count)} low`}</Badge>}
+                {Number(w.out_count) === 0 && Number(w.low_count) === 0 && <Badge color="green">{locale === 'ar' ? 'المخزون سليم' : 'Stock healthy'}</Badge>}
               </div>
             </div>
-            <div className="mt-2.5 flex flex-wrap gap-1.5">
-              {Number(w.out_count) > 0 && <Badge color="red">{locale === 'ar' ? `${num(w.out_count)} صنف نفد` : `${num(w.out_count)} out of stock`}</Badge>}
-              {Number(w.low_count) > 0 && <Badge color="amber">{locale === 'ar' ? `${num(w.low_count)} صنف منخفض` : `${num(w.low_count)} low`}</Badge>}
-              {Number(w.out_count) === 0 && Number(w.low_count) === 0 && <Badge color="green">{locale === 'ar' ? 'المخزون سليم' : 'Stock healthy'}</Badge>}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
-      <Modal open={open} onClose={() => setOpen(false)} title={t('add_warehouse')}>
+      <Modal open={open} onClose={() => { setOpen(false); setEditing(null); }} title={editing ? t('edit_warehouse') : t('add_warehouse')}>
         <div className="space-y-4">
           <Field label={`${t('name')} (EN)`} required><Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></Field>
           <Field label={t('name_ar')}><Input value={form.name_ar} onChange={(e) => setForm({ ...form, name_ar: e.target.value })} /></Field>
-          <Field label={t('location')}><Input value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label={t('location')}><Input value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} /></Field>
+            <Field label={t('capacity')} hint={t('capacity_hint')}>
+              <Input type="number" min={0} value={form.capacity} onChange={(e) => setForm({ ...form, capacity: e.target.value })} dir="ltr" />
+            </Field>
+          </div>
         </div>
         <div className="mt-5 flex justify-end gap-2">
-          <Button variant="secondary" onClick={() => setOpen(false)}>{t('cancel')}</Button>
+          <Button variant="secondary" onClick={() => { setOpen(false); setEditing(null); }}>{t('cancel')}</Button>
           <Button onClick={save}>{t('save')}</Button>
         </div>
       </Modal>

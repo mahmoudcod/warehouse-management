@@ -340,6 +340,21 @@ export const t_dict: Dict = {
   next: { ar: 'التالي', en: 'Next' },
   back: { ar: 'السابق', en: 'Back' },
 
+  // Warehouse detail & capacity
+  capacity: { ar: 'السعة', en: 'Capacity' },
+  capacity_hint: { ar: 'الحد الأقصى للوحدات في هذا المخزن (0 = غير محدودة)', en: 'Max units stored here (0 = unlimited)' },
+  utilization: { ar: 'نسبة الاستخدام', en: 'Utilization' },
+  over_capacity: { ar: 'تجاوز السعة', en: 'Over capacity' },
+  unlimited: { ar: 'غير محدودة', en: 'Unlimited' },
+  warehouse_details: { ar: 'تفاصيل المخزن', en: 'Warehouse details' },
+  items_in_warehouse: { ar: 'الأصناف في هذا المخزن', en: 'Items in this warehouse' },
+  units_stored: { ar: 'وحدات متسلسلة هنا', en: 'Serialized units here' },
+  edit_warehouse: { ar: 'تعديل المخزن', en: 'Edit warehouse' },
+  low_items: { ar: 'أصناف منخفضة', en: 'Low-stock items' },
+  value_at_cost: { ar: 'القيمة بالتكلفة', en: 'Value at cost' },
+  value_at_sell: { ar: 'القيمة بالبيع', en: 'Value at sell' },
+  go_back: { ar: 'رجوع', en: 'Go back' },
+
   // Audit
   audit_log: { ar: 'سجل التدقيق', en: 'Audit log' },
   who: { ar: 'المستخدم', en: 'User' },

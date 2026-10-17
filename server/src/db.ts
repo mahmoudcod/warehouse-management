@@ -150,6 +150,7 @@ const Warehouse = mongoose.model(
     name: { type: String, required: true },
     name_ar: { type: String, default: null },
     location: { type: String, default: null },
+    capacity: { type: Number, default: 0 }, // 0 = unlimited
     is_default: { type: Boolean, default: false },
     created_at: { type: Date, default: () => new Date() },
     deleted_at: { type: Date, default: null },
