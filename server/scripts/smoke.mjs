@@ -325,6 +325,62 @@ const run = async () => {
     );
   }
 
+  console.log('— Warehouses: capacity & detail —');
+  const whEpoch = Date.now();
+  const whCreate = await api('POST', '/api/warehouses', {
+    token: admin.token,
+    body: { name: `Test WH ${whEpoch}`, location: 'Cairo', capacity: 100 },
+  });
+  ok(
+    whCreate.status === 201 && Number(whCreate.json.capacity) === 100,
+    `warehouse created with capacity 100 (got ${whCreate.status}, capacity=${whCreate.json?.capacity})`
+  );
+  const whId = whCreate.json.id;
+
+  const whList = await api('GET', '/api/warehouses', { token: admin.token });
+  const whRow = Array.isArray(whList.json) ? whList.json.find((w) => w.id === whId) : null;
+  ok(
+    !!whRow &&
+      Number(whRow.capacity) === 100 &&
+      (whRow.utilization === null || typeof whRow.utilization === 'number') &&
+      typeof whRow.units_in_stock === 'number',
+    `warehouses list row: capacity 100, utilization number|null (${whRow?.utilization}), units_in_stock number (${whRow?.units_in_stock})`
+  );
+
+  let whDetail = await api('GET', `/api/warehouses/${whId}`, { token: admin.token });
+  ok(
+    whDetail.status === 200 &&
+      whDetail.json.stats?.items_count === 0 &&
+      Array.isArray(whDetail.json.items) &&
+      whDetail.json.items.length === 0 &&
+      Array.isArray(whDetail.json.movements),
+    `warehouse detail empty: items_count 0, items [], movements present (items_count=${whDetail.json?.stats?.items_count})`
+  );
+
+  const whItem = await api('POST', '/api/items', {
+    token: admin.token,
+    body: { name: `WH Test Item ${whEpoch}`, cost_price: 10, selling_price: 20, initial_quantity: 5, warehouse_id: whId },
+  });
+  ok(whItem.status === 201 && !!whItem.json.id, `item created inside new warehouse (got ${whItem.status})`);
+
+  whDetail = await api('GET', `/api/warehouses/${whId}`, { token: admin.token });
+  ok(
+    whDetail.status === 200 && whDetail.json.stats?.total_quantity === 5 && whDetail.json.items?.length === 1,
+    `warehouse detail after item: total_quantity 5, 1 item (got ${whDetail.json?.stats?.total_quantity}, ${whDetail.json?.items?.length})`
+  );
+
+  const whItemDelete = await api('DELETE', `/api/items/${whItem.json.id}`, { token: admin.token });
+  ok(whItemDelete.status === 200 && whItemDelete.json.ok === true, 'warehouse test item deleted');
+
+  const whPatch = await api('PATCH', `/api/warehouses/${whId}`, { token: admin.token, body: { capacity: 200 } });
+  ok(
+    whPatch.status === 200 && Number(whPatch.json.capacity) === 200,
+    `warehouse capacity patched to 200 (got ${whPatch.status}, capacity=${whPatch.json?.capacity})`
+  );
+
+  const whDelete = await api('DELETE', `/api/warehouses/${whId}`, { token: admin.token });
+  ok(whDelete.status === 200 && whDelete.json.ok === true, 'empty warehouse deleted');
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 };
