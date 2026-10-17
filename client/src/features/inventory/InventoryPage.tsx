@@ -686,7 +686,7 @@ function WarehousesTab({ whs, reload }: { whs: any[]; reload: () => void }) {
                   <div className="mb-1 flex flex-wrap items-center justify-between gap-1.5 text-xs">
                     <span className="font-bold text-slate-400">{t('utilization')}</span>
                     <span className="flex items-center gap-1.5">
-                      <span dir="ltr" className="font-semibold text-slate-600 dark:text-slate-300">{num(w.units_in_stock)} / {num(w.capacity)}</span>
+                      <span dir="ltr" className="font-semibold text-slate-600 dark:text-slate-300">{num(w.total_quantity)} / {num(w.capacity)}</span>
                       {util > 100 && <Badge color="red">{t('over_capacity')}</Badge>}
                     </span>
                   </div>
