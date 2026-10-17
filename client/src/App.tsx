@@ -10,6 +10,7 @@ import CustomerProfilePage from './features/customers/CustomerProfilePage';
 import InventoryPage from './features/inventory/InventoryPage';
 import AssignmentsPage from './features/assignments/AssignmentsPage';
 import PaymentsPage from './features/payments/PaymentsPage';
+import SuppliersPage from './features/suppliers/SuppliersPage';
 import AccountingPage from './features/accounting/AccountingPage';
 import ReportsPage from './features/reports/ReportsPage';
 import StaffPage from './features/staff/StaffPage';
@@ -47,6 +48,7 @@ function Shell() {
         <Route path="/inventory" element={<Protected perm="inventory.view"><InventoryPage /></Protected>} />
         <Route path="/assignments" element={<Protected perm="assignments.view"><AssignmentsPage /></Protected>} />
         <Route path="/payments" element={<Protected perm="payments.view"><PaymentsPage /></Protected>} />
+        <Route path="/suppliers" element={<Protected perm="suppliers.view"><SuppliersPage /></Protected>} />
         <Route path="/accounting" element={<Protected perm="accounting.view"><AccountingPage /></Protected>} />
         <Route path="/reports" element={<Protected perm="reports.view"><ReportsPage /></Protected>} />
         <Route path="/staff" element={<Protected perm="staff.view"><StaffPage /></Protected>} />

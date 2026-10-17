@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Pencil, UserX, UserCheck } from 'lucide-react';
+import { Plus, Pencil, UserX, UserCheck, Upload } from 'lucide-react';
 import { api, errMsg, exportCsv } from '../../api/client';
 import { useApp } from '../../context/AppContext';
 import { Badge, Button, Card, ConfirmDialog, DataTable, Field, Input, Modal, PageHeader, Pagination, Textarea, Column } from '../../components/ui/kit';
 import { money, fmtDate } from '../../lib/format';
+import ImportWizard from '../shared/ImportWizard';
 
 const empty = { name: '', phone: '', national_id: '', address: '', notes: '' };
 
@@ -22,6 +23,7 @@ export default function CustomersPage() {
   const [editing, setEditing] = useState<any>(null);
   const [form, setForm] = useState<any>(empty);
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const canFin = can('customers.view_financials');
   const pageSize = 25;
 
@@ -154,6 +156,9 @@ export default function CustomersPage() {
               </Button>
             )}
             {can('customers.create') && (
+              <Button variant="secondary" icon={Upload} onClick={() => setImportOpen(true)}>{t('import_data')}</Button>
+            )}
+            {can('customers.create') && (
               <Button
                 icon={Plus}
                 onClick={() => {
@@ -220,6 +225,8 @@ export default function CustomersPage() {
       </Modal>
 
       <ConfirmDialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={doDelete} title={t('delete_confirm')} message={deleteTarget?.name} />
+
+      <ImportWizard type="customers" open={importOpen} onClose={() => setImportOpen(false)} onDone={load} />
     </>
   );
 }

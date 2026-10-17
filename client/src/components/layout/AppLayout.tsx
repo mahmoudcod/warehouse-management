@@ -3,7 +3,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Boxes, Users, PackageSearch, Wallet, Landmark, BarChart3, UserCog,
   ScrollText, Settings as SettingsIcon, Menu, X, Moon, Sun, Languages, LogOut, Search,
-  Plus, ChevronRight, ChevronLeft, User,
+  Plus, ChevronRight, ChevronLeft, User, Factory,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { api, errMsg } from '../../api/client';
@@ -22,6 +22,7 @@ const NAV: NavItem[] = [
   { path: '/inventory', labelKey: 'nav_inventory', icon: Boxes, perm: 'inventory.view' },
   { path: '/assignments', labelKey: 'nav_assignments', icon: PackageSearch, perm: 'assignments.view' },
   { path: '/payments', labelKey: 'nav_payments', icon: Wallet, perm: 'payments.view' },
+  { path: '/suppliers', labelKey: 'nav_suppliers', icon: Factory, perm: 'suppliers.view' },
   { path: '/accounting', labelKey: 'nav_accounting', icon: Landmark, perm: 'accounting.view' },
   { path: '/reports', labelKey: 'nav_reports', icon: BarChart3, perm: 'reports.view' },
   { path: '/staff', labelKey: 'nav_staff', icon: UserCog, perm: 'staff.view' },

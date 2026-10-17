@@ -1,6 +1,6 @@
 /** Client copy of the server permission model (kept in sync; used by the matrix UI). */
 
-export const MODULES = ['dashboard', 'inventory', 'customers', 'assignments', 'payments', 'accounting', 'reports', 'staff', 'settings', 'audit'] as const;
+export const MODULES = ['dashboard', 'inventory', 'customers', 'assignments', 'payments', 'suppliers', 'accounting', 'reports', 'staff', 'settings', 'audit'] as const;
 export type ModuleKey = (typeof MODULES)[number];
 export const ACTIONS = ['view', 'create', 'edit', 'delete', 'export', 'approve'] as const;
 export type ActionKey = (typeof ACTIONS)[number];
@@ -11,6 +11,7 @@ export const MODULE_LABELS: Record<ModuleKey, { en: string; ar: string }> = {
   customers: { en: 'Customers', ar: 'العملاء' },
   assignments: { en: 'Assignments (Devices Taken)', ar: 'التوريدات (أجهزة لدى العملاء)' },
   payments: { en: 'Payments', ar: 'المدفوعات' },
+  suppliers: { en: 'Suppliers & Purchases', ar: 'الموردون والمشتريات' },
   accounting: { en: 'Accounting', ar: 'الحسابات' },
   reports: { en: 'Reports', ar: 'التقارير' },
   staff: { en: 'Staff Management', ar: 'إدارة الموظفين' },
@@ -32,6 +33,7 @@ export const PERMISSION_TEMPLATES: Record<string, { en: string; ar: string; perm
       'inventory.view', 'inventory.create', 'inventory.edit', 'inventory.export',
       'customers.view', 'customers.create', 'customers.view_financials',
       'assignments.view', 'assignments.create', 'assignments.edit', 'assignments.export',
+      'suppliers.view', 'suppliers.create', 'suppliers.edit', 'suppliers.export',
       'reports.view', 'reports.export',
     ],
   },
@@ -57,6 +59,7 @@ export const PERMISSION_TEMPLATES: Record<string, { en: string; ar: string; perm
       'assignments.view', 'assignments.create', 'assignments.edit', 'assignments.delete', 'assignments.approve', 'assignments.export',
       'payments.view', 'payments.create', 'payments.edit', 'payments.delete', 'payments.approve', 'payments.export',
       'accounting.view', 'accounting.export',
+      'suppliers.view', 'suppliers.create', 'suppliers.edit', 'suppliers.delete', 'suppliers.approve', 'suppliers.export',
       'reports.view', 'reports.export',
     ],
   },

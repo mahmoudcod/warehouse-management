@@ -171,6 +171,7 @@ const Item = mongoose.model(
     selling_price: { type: Number, default: 0 },
     quantity: { type: Number, default: 0, min: 0 },
     min_stock_level: { type: Number, default: 0 },
+    max_stock_level: { type: Number, default: 0 },
     warehouse_id: { type: Number, default: null },
     track_serials: { type: Boolean, default: false },
     photo_url: { type: String, default: null },
@@ -313,6 +314,7 @@ const Transaction = mongoose.model(
     account_id: { type: Number, default: null },
     reference: { type: String, default: null },
     customer_id: { type: Number, default: null },
+    supplier_id: { type: Number, default: null },
     payment_id: { type: Number, default: null },
     transfer_id: { type: Number, default: null },
     notes: { type: String, default: null },
@@ -426,6 +428,66 @@ const PasswordReset = mongoose.model(
   })
 );
 
+const Supplier = mongoose.model(
+  'Supplier',
+  new Schema({
+    ...withId,
+    name: { type: String, required: true },
+    phone: { type: String, default: null },
+    contact_person: { type: String, default: null },
+    address: { type: String, default: null },
+    notes: { type: String, default: null },
+    is_active: { type: Boolean, default: true },
+    created_by: { type: Number, default: null },
+    created_at: { type: Date, default: () => new Date() },
+    updated_at: { type: Date, default: () => new Date() },
+    deleted_at: { type: Date, default: null },
+  })
+);
+
+const SupplierPayment = mongoose.model(
+  'SupplierPayment',
+  new Schema({
+    ...withId,
+    supplier_id: { type: Number, required: true },
+    amount: { type: Number, required: true, min: 0 },
+    method: { type: String, enum: ['cash', 'transfer', 'other'], default: 'cash' },
+    paid_at: { type: String, required: true }, // YYYY-MM-DD
+    reference: { type: String, default: null },
+    notes: { type: String, default: null },
+    transaction_id: { type: Number, default: null },
+    created_by: { type: Number, default: null },
+    created_at: { type: Date, default: () => new Date() },
+  })
+);
+
+const PurchaseOrder = mongoose.model(
+  'PurchaseOrder',
+  new Schema({
+    ...withId,
+    supplier_id: { type: Number, required: true },
+    status: { type: String, enum: ['draft', 'received', 'partial', 'cancelled'], default: 'draft' },
+    items: {
+      type: [{
+        item_id: { type: Number, default: null },
+        item_text: { type: String, default: null },
+        quantity: { type: Number, required: true },
+        unit_cost: { type: Number, default: 0 },
+        received_qty: { type: Number, default: 0 },
+      }],
+      default: [],
+    },
+    total: { type: Number, default: 0 },
+    notes: { type: String, default: null },
+    expected_at: { type: String, default: null }, // YYYY-MM-DD
+    received_at: { type: Date, default: null },
+    cancel_reason: { type: String, default: null },
+    created_by: { type: Number, default: null },
+    created_at: { type: Date, default: () => new Date() },
+    updated_at: { type: Date, default: () => new Date() },
+  })
+);
+
 export {
   User,
   Customer,
@@ -447,6 +509,9 @@ export {
   AuditLog,
   Setting,
   PasswordReset,
+  Supplier,
+  SupplierPayment,
+  PurchaseOrder,
 };
 
 // ---------------- Computed balances (customer_balances view equivalent) ----------------

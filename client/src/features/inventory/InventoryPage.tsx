@@ -1,16 +1,24 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Plus, Pencil, Trash2, PackageSearch, ArrowLeftRight, Scale, FolderPlus, Warehouse as WhIcon } from 'lucide-react';
+import { Plus, Pencil, Trash2, PackageSearch, ArrowLeftRight, Scale, FolderPlus, Warehouse as WhIcon, Boxes, Ban, Upload } from 'lucide-react';
 import { api, errMsg, exportCsv } from '../../api/client';
 import { useApp } from '../../context/AppContext';
 import { Badge, Button, Card, ConfirmDialog, DataTable, Field, Input, Modal, PageHeader, Pagination, Select, Tabs, Textarea, Column } from '../../components/ui/kit';
 import { money, num, fmtDate } from '../../lib/format';
+import ImportWizard from '../shared/ImportWizard';
 
 const emptyItem = {
   name: '', name_ar: '', sku: '', barcode: '', category_id: '', brand: '', model: '',
-  cost_price: '', selling_price: '', min_stock_level: 0, warehouse_id: '', track_serials: false,
+  cost_price: '', selling_price: '', min_stock_level: 0, max_stock_level: 0, warehouse_id: '', track_serials: false,
   initial_quantity: 0, serialsText: '',
 };
+
+/* Serialized-unit status → badge color / label (labels use existing keys). */
+const unitStatusColor: Record<string, any> = { in_stock: 'green', assigned: 'blue', returned: 'amber', void: 'slate' };
+function unitStatusText(status: string, t: (k: string) => string): string {
+  const map: Record<string, string> = { in_stock: 'in_stock', assigned: 'taken', returned: 'returned', void: 'voided' };
+  return map[status] ? t(map[status]) : status;
+}
 
 export default function InventoryPage() {
   const { t, can, toast, locale } = useApp();
@@ -33,9 +41,15 @@ export default function InventoryPage() {
   const [transferOpen, setTransferOpen] = useState(false);
   const [transfer, setTransfer] = useState({ item_id: '', quantity: '', from_warehouse_id: '', to_warehouse_id: '', reason: '' });
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
+  const [unitsTarget, setUnitsTarget] = useState<any>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const [movements, setMovements] = useState<any[]>([]);
   const [mvSearch, setMvSearch] = useState('');
   const [mvType, setMvType] = useState('');
+  const [serialQ, setSerialQ] = useState('');
+  const [serialResult, setSerialResult] = useState<any>(null);
+  const [serialNotFound, setSerialNotFound] = useState(false);
+  const [serialSearching, setSerialSearching] = useState(false);
   const pageSize = 25;
 
   const loadLookups = useCallback(() => {
@@ -91,6 +105,7 @@ export default function InventoryPage() {
       cost_price: Number(form.cost_price) || 0,
       selling_price: Number(form.selling_price) || 0,
       min_stock_level: Number(form.min_stock_level) || 0,
+      max_stock_level: Number(form.max_stock_level) || 0,
       warehouse_id: form.warehouse_id || null,
       track_serials: form.track_serials,
     };
@@ -150,6 +165,23 @@ export default function InventoryPage() {
     }
   };
 
+  const findSerial = async () => {
+    const s = serialQ.trim();
+    if (!s) return;
+    setSerialSearching(true);
+    setSerialResult(null);
+    setSerialNotFound(false);
+    try {
+      const r = await api.get(`/items/units/search?serial=${encodeURIComponent(s)}`);
+      setSerialResult(r.data);
+    } catch (e: any) {
+      if (e?.response?.status === 404) setSerialNotFound(true);
+      else toast(errMsg(e), 'err');
+    } finally {
+      setSerialSearching(false);
+    }
+  };
+
   const itemCols: Column<any>[] = [
     {
       key: 'name',
@@ -166,9 +198,12 @@ export default function InventoryPage() {
       key: 'quantity',
       label: t('quantity_in_stock'),
       render: (i) => (
-        <Badge color={Number(i.quantity) === 0 ? 'red' : i.low_stock ? 'amber' : 'green'}>
-          {num(i.quantity)}
-        </Badge>
+        <div className="flex flex-wrap items-center gap-1">
+          <Badge color={Number(i.quantity) === 0 ? 'red' : i.low_stock ? 'amber' : 'green'}>
+            {num(i.quantity)}
+          </Badge>
+          {i.over_stock && <Badge color="violet">{t('over_stock')}</Badge>}
+        </div>
       ),
     },
     { key: 'cost_price', label: t('cost_price'), hideOnMobile: true, render: (i) => <span dir="ltr">{money(i.cost_price)}</span> },
@@ -197,11 +232,18 @@ export default function InventoryPage() {
                     <ArrowLeftRight size={15} />
                   </button>
                   <button
+                    className="rounded-lg p-2 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-900/30"
+                    title={t('units_management')}
+                    onClick={() => setUnitsTarget(i)}
+                  >
+                    <Boxes size={15} />
+                  </button>
+                  <button
                     className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-primary-600 dark:hover:bg-slate-800"
                     title={t('edit')}
                     onClick={() => {
                       setEditing(i);
-                      setForm({ ...emptyItem, ...i, category_id: i.category_id || '', warehouse_id: i.warehouse_id || '', quantity: String(i.quantity), qty_reason: '' });
+                      setForm({ ...emptyItem, ...i, category_id: i.category_id || '', warehouse_id: i.warehouse_id || '', max_stock_level: i.max_stock_level ?? 0, quantity: String(i.quantity), qty_reason: '' });
                       setFormOpen(true);
                     }}
                   >
@@ -245,6 +287,9 @@ export default function InventoryPage() {
               <Button variant="secondary" icon={ArrowLeftRight} onClick={() => { setTransfer({ item_id: '', quantity: '', from_warehouse_id: '', to_warehouse_id: '', reason: '' }); setTransferOpen(true); }}>
                 {t('transfer_stock')}
               </Button>
+            )}
+            {can('inventory.create') && (
+              <Button variant="secondary" icon={Upload} onClick={() => setImportOpen(true)}>{t('import_data')}</Button>
             )}
             {can('inventory.create') && (
               <Button icon={Plus} onClick={() => { setEditing(null); setForm(emptyItem); setFormOpen(true); }}>{t('add_item')}</Button>
@@ -298,6 +343,56 @@ export default function InventoryPage() {
               )}
             </div>
             <DataTable columns={mvCols} rows={movements} />
+            <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 p-3 dark:border-slate-800">
+              <Input
+                placeholder={t('find_serial')}
+                value={serialQ}
+                onChange={(e) => setSerialQ(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && findSerial()}
+                className="max-w-xs font-mono"
+                dir="ltr"
+              />
+              <Button size="sm" variant="secondary" disabled={serialSearching} onClick={findSerial}>{t('search')}</Button>
+            </div>
+            {serialNotFound && (
+              <div className="border-t border-slate-100 p-4 text-sm font-semibold text-rose-600 dark:border-slate-800 dark:text-rose-400">
+                {locale === 'ar' ? 'لم يتم العثور على هذا الرقم التسلسلي' : 'Serial not found'}
+              </div>
+            )}
+            {serialResult?.unit && (
+              <div className="border-t border-slate-100 p-4 dark:border-slate-800">
+                <div className="rounded-2xl border border-slate-200 p-4 dark:border-slate-700">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="font-bold text-slate-800 dark:text-slate-100">
+                        {locale === 'ar' && serialResult.item?.name_ar ? serialResult.item.name_ar : serialResult.item?.name || '—'}
+                      </div>
+                      <div className="font-mono text-xs text-slate-400" dir="ltr">{serialResult.unit.serial}</div>
+                    </div>
+                    <Badge color={unitStatusColor[serialResult.unit.status] || 'slate'}>{unitStatusText(serialResult.unit.status, t)}</Badge>
+                  </div>
+                  <div className="mt-3 grid grid-cols-1 gap-2 text-sm sm:grid-cols-2">
+                    <div>
+                      <span className="text-xs font-bold text-slate-400">{t('serial_found_in')}: </span>
+                      <span className="font-semibold text-slate-700 dark:text-slate-200">
+                        {serialResult.warehouse ? (locale === 'ar' ? serialResult.warehouse.name_ar || serialResult.warehouse.name : serialResult.warehouse.name) : '—'}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-xs font-bold text-slate-400">{t('holder')}: </span>
+                      <span className="font-semibold text-slate-700 dark:text-slate-200">
+                        {serialResult.holder ? (
+                          <>
+                            {serialResult.holder.name}{' '}
+                            <span className="text-xs font-normal text-slate-400" dir="ltr">{serialResult.holder.phone || ''}</span>
+                          </>
+                        ) : '—'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </Card>
         )}
 
@@ -329,6 +424,7 @@ export default function InventoryPage() {
           <Field label={t('cost_price')} required><Input type="number" min={0} value={form.cost_price} onChange={(e) => setForm({ ...form, cost_price: e.target.value })} dir="ltr" /></Field>
           <Field label={t('selling_price')} required><Input type="number" min={0} value={form.selling_price} onChange={(e) => setForm({ ...form, selling_price: e.target.value })} dir="ltr" /></Field>
           <Field label={t('min_stock')}><Input type="number" min={0} value={form.min_stock_level} onChange={(e) => setForm({ ...form, min_stock_level: e.target.value })} dir="ltr" /></Field>
+          <Field label={t('max_stock')}><Input type="number" min={0} value={form.max_stock_level} onChange={(e) => setForm({ ...form, max_stock_level: e.target.value })} dir="ltr" /></Field>
           {!editing ? (
             <Field label={t('initial_stock')}><Input type="number" min={0} value={form.initial_quantity} onChange={(e) => setForm({ ...form, initial_quantity: e.target.value })} dir="ltr" /></Field>
           ) : (
@@ -421,6 +517,12 @@ export default function InventoryPage() {
       <ConfirmDialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={async () => {
         try { await api.delete(`/items/${deleteTarget.id}`); toast(t('saved_ok')); load(); } catch (e) { toast(errMsg(e), 'err'); }
       }} title={t('delete_confirm')} message={deleteTarget?.name} />
+
+      {unitsTarget && (
+        <UnitsModal item={unitsTarget} whs={whs} onClose={() => setUnitsTarget(null)} onChanged={load} />
+      )}
+
+      <ImportWizard type="items" open={importOpen} onClose={() => setImportOpen(false)} onDone={load} />
     </>
   );
 }
@@ -565,5 +667,153 @@ function WarehousesTab({ whs, reload }: { whs: any[]; reload: () => void }) {
         try { await api.delete(`/warehouses/${delTarget.id}`); toast(t('saved_ok')); reload(); } catch (e) { toast(errMsg(e), 'err'); }
       }} title={t('delete_confirm')} message={delTarget?.name} />
     </Card>
+  );
+}
+
+/** Serialized-units manager for one item: add serials, void / move in-stock units. */
+function UnitsModal({ item, whs, onClose, onChanged }: { item: any; whs: any[]; onClose: () => void; onChanged: () => void }) {
+  const { t, can, toast, locale } = useApp();
+  const [units, setUnits] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [serialsText, setSerialsText] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [voidTarget, setVoidTarget] = useState<any>(null);
+  const [moveTarget, setMoveTarget] = useState<any>(null);
+  const [moveWh, setMoveWh] = useState('');
+
+  const loadUnits = useCallback(() => {
+    setLoading(true);
+    api
+      .get(`/items/${item.id}`)
+      .then((r) => setUnits(r.data.units || []))
+      .catch((e) => toast(errMsg(e), 'err'))
+      .finally(() => setLoading(false));
+  }, [item.id]);
+  useEffect(loadUnits, [loadUnits]);
+
+  const whName = (id: any) => {
+    const w = whs.find((x: any) => x.id === Number(id));
+    if (!w) return '—';
+    return locale === 'ar' ? w.name_ar || w.name : w.name;
+  };
+
+  const addSerials = async () => {
+    const serials = serialsText.split('\n').map((s: string) => s.trim()).filter(Boolean);
+    if (!serials.length) return;
+    setSaving(true);
+    try {
+      await api.post(`/items/${item.id}/units`, { serials });
+      toast(t('saved_ok'));
+      setSerialsText('');
+      loadUnits();
+      onChanged();
+    } catch (e) {
+      toast(errMsg(e), 'err');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const doVoid = async (reason?: string) => {
+    try {
+      await api.post(`/items/${item.id}/units/${voidTarget.id}/void`, { reason });
+      toast(t('saved_ok'));
+      setVoidTarget(null);
+      loadUnits();
+      onChanged();
+    } catch (e) {
+      toast(errMsg(e), 'err');
+    }
+  };
+
+  const doMove = async () => {
+    if (!moveWh) return;
+    try {
+      await api.post(`/items/${item.id}/units/${moveTarget.id}/transfer`, { to_warehouse_id: Number(moveWh) });
+      toast(t('saved_ok'));
+      setMoveTarget(null);
+      loadUnits();
+    } catch (e) {
+      toast(errMsg(e), 'err');
+    }
+  };
+
+  const unitCols: Column<any>[] = [
+    { key: 'serial', label: t('serial_numbers'), render: (u) => <span className="font-mono" dir="ltr">{u.serial}</span> },
+    { key: 'status', label: t('status'), render: (u) => <Badge color={unitStatusColor[u.status] || 'slate'}>{unitStatusText(u.status, t)}</Badge> },
+    { key: 'wh', label: t('warehouse'), hideOnMobile: true, render: (u) => whName(u.warehouse_id) },
+    { key: 'holder', label: t('holder'), hideOnMobile: true, render: (u) => u.customer_name || '—' },
+    ...(can('inventory.edit')
+      ? [{
+          key: 'act',
+          label: t('actions'),
+          className: 'text-end',
+          render: (u: any) =>
+            u.status === 'in_stock' ? (
+              <div className="flex justify-end gap-1">
+                <button className="rounded-lg p-2 text-slate-400 hover:bg-rose-50 hover:text-rose-600 dark:hover:bg-rose-900/30" title={t('void_unit')} onClick={() => setVoidTarget(u)}>
+                  <Ban size={15} />
+                </button>
+                <button
+                  className="rounded-lg p-2 text-slate-400 hover:bg-violet-50 hover:text-violet-600 dark:hover:bg-violet-900/30"
+                  title={t('move_unit')}
+                  onClick={() => {
+                    setMoveWh('');
+                    setMoveTarget(u);
+                  }}
+                >
+                  <ArrowLeftRight size={15} />
+                </button>
+              </div>
+            ) : null,
+        }]
+      : []),
+  ];
+
+  return (
+    <Modal open onClose={onClose} title={`${t('units_management')} — ${locale === 'ar' && item.name_ar ? item.name_ar : item.name}`} wide>
+      {can('inventory.edit') && (
+        <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end">
+          <Field label={t('add_serials')} hint={t('serials_help')} className="flex-1">
+            <Textarea rows={2} value={serialsText} onChange={(e) => setSerialsText(e.target.value)} className="font-mono" dir="ltr" />
+          </Field>
+          <Button icon={Plus} disabled={saving} onClick={addSerials}>{t('add_serials')}</Button>
+        </div>
+      )}
+      {loading ? (
+        <div className="py-8 text-center text-sm text-slate-400">{t('loading')}</div>
+      ) : units.length ? (
+        <DataTable columns={unitCols} rows={units} />
+      ) : (
+        <div className="py-8 text-center text-sm text-slate-400">{t('no_serials')}</div>
+      )}
+
+      <ConfirmDialog
+        open={!!voidTarget}
+        onClose={() => setVoidTarget(null)}
+        onConfirm={doVoid}
+        title={t('void_unit')}
+        message={voidTarget?.serial}
+        needReason
+      />
+
+      <Modal open={!!moveTarget} onClose={() => setMoveTarget(null)} title={t('move_unit')}>
+        <div className="space-y-4">
+          <div className="font-mono text-sm text-slate-600 dark:text-slate-300" dir="ltr">{moveTarget?.serial}</div>
+          <Field label={t('warehouse')} required>
+            <Select value={moveWh} onChange={(e) => setMoveWh(e.target.value)}>
+              <option value="">—</option>
+              {whs.map((w) => (
+                <option key={w.id} value={w.id}>{locale === 'ar' ? w.name_ar || w.name : w.name}</option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="secondary" onClick={() => setMoveTarget(null)}>{t('cancel')}</Button>
+          <Button disabled={!moveWh} onClick={doMove}>{t('save')}</Button>
+        </div>
+      </Modal>
+    </Modal>
   );
 }

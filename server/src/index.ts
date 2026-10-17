@@ -21,6 +21,8 @@ import dashboardRoutes from './routes/dashboard';
 import auditRoutes from './routes/audit';
 import settingsRoutes from './routes/settings';
 import searchRoutes from './routes/search';
+import suppliersRoutes from './routes/suppliers';
+import importRoutes from './routes/import';
 
 const app = express();
 app.disable('x-powered-by');
@@ -74,6 +76,8 @@ app.use('/api/dashboard', authenticate, dashboardRoutes);
 app.use('/api/audit', authenticate, auditRoutes);
 app.use('/api/settings', authenticate, settingsRoutes);
 app.use('/api/search', authenticate, searchRoutes);
+app.use('/api/suppliers', authenticate, suppliersRoutes);
+app.use('/api/import', authenticate, importRoutes);
 
 // Attachments (authenticated)
 const uploadsDir = path.join(__dirname, '..', 'uploads');
